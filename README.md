@@ -20,7 +20,6 @@ It is optimized for very large datasets and very large numbers of perturbations.
 import anndata as ad
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
 
 from pdex import parallel_differential_expression
 
