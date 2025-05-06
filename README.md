@@ -4,6 +4,8 @@ parallel differential expression for single-cell perturbation sequencing
 
 ## Installation
 
+Add to your `pyproject.toml` file with [`uv`](https://github.com/astral-sh/uv)
+
 ```bash
 uv add pdex
 ```
