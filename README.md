@@ -32,8 +32,6 @@ N_GENES = 100
 N_PERTS = 10
 MAX_UMI = 1e6
 
-RANDOM_SEED = 42
-
 
 def build_random_anndata(
     n_cells: int = N_CELLS,
@@ -41,11 +39,8 @@ def build_random_anndata(
     n_perts: int = N_PERTS,
     pert_col: str = PERT_COL,
     control_var: str = CONTROL_VAR,
-    random_state: int = RANDOM_SEED,
 ) -> ad.AnnData:
     """Sample a random AnnData object."""
-    if random_state is not None:
-        np.random.seed(random_state)
     return ad.AnnData(
         X=np.random.randint(0, MAX_UMI, size=(n_cells, n_genes)),
         obs=pd.DataFrame(
