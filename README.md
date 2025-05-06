@@ -10,11 +10,15 @@ Add to your `pyproject.toml` file with [`uv`](https://github.com/astral-sh/uv)
 uv add pdex
 ```
 
-## Usage
+## Summary
 
 This is a python package for performing parallel differential expression using the Wilcoxon rank-sum test.
 
 It is optimized for very large datasets and very large numbers of perturbations.
+
+It makes use of shared memory to parallelize the computation to a high number of threads and minimizes the [IPC](https://en.wikipedia.org/wiki/Inter-process_communication) between processes to reduce overhead.
+
+## Usage
 
 ```python
 import anndata as ad
