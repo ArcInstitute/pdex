@@ -8,6 +8,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 from adjustpy import adjust
+from scipy.sparse import csr_matrix
 from scipy.stats import ranksums
 from tqdm import tqdm
 
@@ -18,9 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 def _build_shared_matrix(
-    data: np.ndarray,
+    data: np.ndarray | np.matrix | csr_matrix,
 ) -> tuple[str, tuple[int, int], np.dtype]:
     """Create a shared memory matrix from a numpy array."""
+    if isinstance(data, np.matrix):
+        data = np.asarray(data)
+    elif isinstance(data, csr_matrix):
+        data = data.toarray()
     shared_matrix = SharedMemory(create=True, size=data.nbytes)
     matrix = np.ndarray(data.shape, dtype=data.dtype, buffer=shared_matrix.buf)
     matrix[:] = data
@@ -231,7 +236,7 @@ def parallel_differential_expression(
 
     # Isolate the data matrix from the AnnData object
     logger.info("Creating shared memory memory matrix for parallel computing")
-    (shm_name, shape, dtype) = _build_shared_matrix(data=adata.X.toarray())
+    (shm_name, shape, dtype) = _build_shared_matrix(data=adata.X)
 
     logger.info(f"Creating generator of all combinations: N={n_combinations}")
     combinations = _combinations_generator(
