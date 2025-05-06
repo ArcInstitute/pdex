@@ -171,7 +171,10 @@ def _percent_change(
     μ_ref: float,
 ) -> float:
     """Calculate the percent change between two means."""
-    return (μ_tgt - μ_ref) / μ_ref
+    try:
+        return (μ_tgt - μ_ref) / μ_ref
+    except ZeroDivisionError:
+        return np.nan
 
 
 def parallel_differential_expression(
