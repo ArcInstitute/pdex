@@ -1,6 +1,6 @@
 [project]
 name = "pdex"
-version = "0.1.1"
+version = "0.1.2"
 description = "Parallel differential expression for single-cell perturbation sequencing"
 readme = "README.md"
 authors = [{ name = "noam teyssier", email = "noam.teyssier@arcinstitute.org" }]
