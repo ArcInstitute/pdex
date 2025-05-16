@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from adjustpy import adjust
 from scipy.sparse import csr_matrix
-from scipy.stats import anderson_ksamp, ranksums
+from scipy.stats import anderson_ksamp, ranksums, ttest_ind
 from tqdm import tqdm
 
 # Configure logger
@@ -17,7 +17,7 @@ tools_logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-KNOWN_METRICS = ["wilcoxon", "anderson"]
+KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
 
 def _build_shared_matrix(
@@ -117,6 +117,8 @@ def _process_target_batch_shm(
             de_result = ranksums(x_tgt, x_ref)
         elif metric == "anderson":
             de_result = anderson_ksamp([x_tgt, x_ref])
+        elif metric == "t-test":
+            de_result = ttest_ind(x_tgt, x_ref)
         else:
             ValueError("Unknown Metric")
 

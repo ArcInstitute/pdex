@@ -84,6 +84,17 @@ def test_dex_anderson():
     assert results.shape[0] == N_GENES * N_PERTS
 
 
+def test_dex_ttest():
+    adata = build_random_anndata()
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="t-test",
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+
+
 def test_dex_unknown_metric():
     adata = build_random_anndata()
     try:
