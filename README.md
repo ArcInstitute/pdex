@@ -12,11 +12,17 @@ uv add pdex
 
 ## Summary
 
-This is a python package for performing parallel differential expression using the Wilcoxon rank-sum test.
+This is a python package for performing parallel differential expression between multiple groups and a control.
 
 It is optimized for very large datasets and very large numbers of perturbations.
 
 It makes use of shared memory to parallelize the computation to a high number of threads and minimizes the [IPC](https://en.wikipedia.org/wiki/Inter-process_communication) between processes to reduce overhead.
+
+It supports the following metrics:
+
+- Wilcoxon Rank Sum
+- Anderson-Darling
+- T-Test
 
 ## Usage
 
@@ -60,10 +66,21 @@ def build_random_anndata(
 
 def main():
     adata = build_random_anndata()
+
+    # Run pdex with default metric (wilcoxon)
     results = parallel_differential_expression(
         adata,
         reference=CONTROL_VAR,
         groupby_key=PERT_COL,
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+
+    # Run pdex with alt metric (anderson)
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="anderson"
     )
     assert results.shape[0] == N_GENES * N_PERTS
 ```
