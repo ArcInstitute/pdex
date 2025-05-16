@@ -217,7 +217,7 @@ def parallel_differential_expression(
     pd.DataFrame containing differential expression results for each group and feature
     """
     if metric not in KNOWN_METRICS:
-        return ValueError(f"Unknown metric: {metric} :: Expecting: {KNOWN_METRICS}")
+        raise ValueError(f"Unknown metric: {metric} :: Expecting: {KNOWN_METRICS}")
 
     unique_targets = adata.obs[groupby_key].unique()
     if groups is not None:
