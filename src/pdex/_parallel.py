@@ -113,14 +113,22 @@ def _process_target_batch_shm(
         fc = _fold_change(μ_tgt, μ_ref)
         pcc = _percent_change(μ_tgt, μ_ref)
 
-        if metric == "wilcoxon":
-            de_result = ranksums(x_tgt, x_ref)
-        elif metric == "anderson":
-            de_result = anderson_ksamp([x_tgt, x_ref])
-        elif metric == "t-test":
-            de_result = ttest_ind(x_tgt, x_ref)
-        else:
-            ValueError("Unknown Metric")
+        (pval, stat) = (1.0, np.nan)  # default output in case of failure
+        try:
+            match metric:
+                case "wilcoxon":
+                    de_result = ranksums(x_tgt, x_ref)
+                    pval, stat = (de_result.pvalue, de_result.statistic)
+                case "anderson":
+                    de_result = anderson_ksamp([x_tgt, x_ref])
+                    pval, stat = (de_result.pvalue, de_result.statistic)
+                case "t-test":
+                    de_result = ttest_ind(x_tgt, x_ref)
+                    pval, stat = (de_result.pvalue, de_result.statistic)
+                case _:
+                    raise KeyError(f"Unknown Metric: {metric}")
+        except ValueError:
+            """Don't bail on runtime value errors - just use default values"""
 
         results.append(
             {
@@ -131,8 +139,8 @@ def _process_target_batch_shm(
                 "reference_mean": μ_ref,
                 "percent_change": pcc,
                 "fold_change": fc,
-                "p_value": de_result.pvalue,
-                "statistic": de_result.statistic,
+                "p_value": pval,
+                "statistic": stat,
             }
         )
 
