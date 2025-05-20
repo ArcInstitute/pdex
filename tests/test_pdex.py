@@ -107,3 +107,13 @@ def test_dex_unknown_metric():
         assert False
     except ValueError:
         "Caught error"
+
+def test_dex_single_observed_value_anderson():
+    adata = build_random_anndata()
+    adata.X = np.zeros_like(adata.X)
+    parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="anderson",
+    )
