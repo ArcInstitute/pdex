@@ -113,7 +113,7 @@ def _process_target_batch_shm(
         fc = _fold_change(μ_tgt, μ_ref)
         pcc = _percent_change(μ_tgt, μ_ref)
 
-        (pval, stat) = (1.0, np.nan) # default output in case of failure
+        (pval, stat) = (1.0, np.nan)  # default output in case of failure
         try:
             match metric:
                 case "wilcoxon":
