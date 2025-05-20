@@ -108,6 +108,7 @@ def test_dex_unknown_metric():
     except ValueError:
         "Caught error"
 
+
 def test_dex_single_observed_value_anderson():
     adata = build_random_anndata()
     adata.X = np.zeros_like(adata.X)
