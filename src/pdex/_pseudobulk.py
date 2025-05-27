@@ -6,7 +6,7 @@ from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
 from tqdm import tqdm
 
-KNOWN_METHODS = ["sum", "mean"]
+KNOWN_METHODS = ["sum", "mean", "median"]
 
 
 def pseudobulk_dex(
@@ -19,7 +19,32 @@ def pseudobulk_dex(
     num_workers: int = 1,
     aggr_method: str = "sum",
 ) -> pd.DataFrame:
-    """Calculate differential expression between groups of cells after performing a pseudobulk."""
+    """Calculate differential expression between groups of cells after performing a pseudobulk.
+
+
+    Parameters
+    ----------
+    adata: ad.AnnData
+        Annotated data matrix containing raw gene expression data (count data)
+    groupby: list[str]
+        Which columns to pseudobulk over - must include `test_col` (perturbation column)
+    groups: list[str], optional
+        List of targets to compare, defaults to None which compares all groups (all perturbations)
+    reference: str, optional
+        Reference group to compare against, defaults to "non-targeting"
+    test_col: str, optional
+        Column in obs which designates the perturbation identity (or what you want to measure differential expression)
+    design: str, optional
+        Design formula to use in DESeq2 - defaults to "~ test_col + (remaining groupby keys)"
+    num_workers: int
+        Number of workers to use for parallel processing, defaults to 1
+    aggr_method: str
+        Aggregation method to use in pseudobulk
+
+    Returns
+    -------
+    pd.DataFrame containing differential expression results for each group and feature
+    """
 
     # Check for known aggregation method
     if aggr_method not in KNOWN_METHODS:
@@ -47,7 +72,7 @@ def pseudobulk_dex(
     if groups is None:
         groups = [x for x in adata.obs[test_col].unique() if x != reference]
 
-    bulk = ADPBulk(adata, groupby=groupby)
+    bulk = ADPBulk(adata, groupby=groupby, method=aggr_method)
     matrix = bulk.fit_transform()
     meta = bulk.get_meta()
 
