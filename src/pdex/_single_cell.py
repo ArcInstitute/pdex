@@ -199,7 +199,7 @@ def _sample_mean(
     Exponenentiates and subtracts one if `is_log1p == True`
     """
     if is_log1p:
-        return np.exp1m(x).mean()
+        return np.expm1(x).mean()
     else:
         return x.mean()
 
