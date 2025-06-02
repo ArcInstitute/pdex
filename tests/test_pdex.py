@@ -36,7 +36,8 @@ def build_random_anndata(
                     size=n_cells,
                     replace=True,
                 ),
-            }
+            },
+            index=np.arange(n_cells).astype(str),
         ),
     )
 
@@ -69,6 +70,29 @@ def test_dex_sparse_matrix():
         adata,
         reference=CONTROL_VAR,
         groupby_key=PERT_COL,
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+
+
+def test_dex_wilcoxon():
+    adata = build_random_anndata()
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="wilcoxon",
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+
+
+def test_dex_wilcoxon_no_tie_correct():
+    adata = build_random_anndata()
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="wilcoxon",
+        tie_correct=False,
     )
     assert results.shape[0] == N_GENES * N_PERTS
 
