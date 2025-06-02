@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from adjustpy import adjust
 from scipy.sparse import csr_matrix
-from scipy.stats import anderson_ksamp, ranksums, ttest_ind
+from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
 from tqdm import tqdm
 
 # Configure logger
@@ -83,6 +83,8 @@ def _process_target_batch_shm(
     shape: tuple[int, int],
     dtype: np.dtype,
     metric: str,
+    tie_correct: bool = False,
+    **kwargs,
 ) -> list[dict[str, float]]:
     """Process a batch of target gene and feature combinations.
 
@@ -117,13 +119,24 @@ def _process_target_batch_shm(
         try:
             match metric:
                 case "wilcoxon":
-                    de_result = ranksums(x_tgt, x_ref)
+                    if tie_correct:
+                        print("RUNNING WITH TIE CORRECTION")
+                        # default mannwhitneyu behavior
+                        de_result = mannwhitneyu(
+                            x_tgt, x_ref, use_continuity=True, **kwargs
+                        )
+                    else:
+                        print("RUNNING WITHOUT TIE CORRECTION")
+                        # equivalent to `ranksums` behavior when `use_continuity=False` but statistic changes
+                        de_result = mannwhitneyu(
+                            x_tgt, x_ref, use_continuity=False, **kwargs
+                        )
                     pval, stat = (de_result.pvalue, de_result.statistic)
                 case "anderson":
-                    de_result = anderson_ksamp([x_tgt, x_ref])
+                    de_result = anderson_ksamp([x_tgt, x_ref], **kwargs)
                     pval, stat = (de_result.pvalue, de_result.statistic)
                 case "t-test":
-                    de_result = ttest_ind(x_tgt, x_ref)
+                    de_result = ttest_ind(x_tgt, x_ref, **kwargs)
                     pval, stat = (de_result.pvalue, de_result.statistic)
                 case _:
                     raise KeyError(f"Unknown Metric: {metric}")
@@ -202,6 +215,8 @@ def parallel_differential_expression(
     num_workers: int = 1,
     batch_size: int = 100,
     metric: str = "wilcoxon",
+    tie_correct: bool = True,
+    **kwargs,
 ) -> pd.DataFrame:
     """Calculate differential expression between groups of cells.
 
@@ -220,7 +235,11 @@ def parallel_differential_expression(
     batch_size: int
         Number of combinations to process in each batch, defaults to 100
     metric: str
-        The differential expression metric to use [wilcoxon, anderson]
+        The differential expression metric to use [wilcoxon, anderson, t-test]
+    tie_correct: bool
+        Whether to perform continuity (tie) correction for wilcoxon ranksum test
+    **kwargs:
+        keyword arguments to pass to metric
 
     Returns
     -------
@@ -286,6 +305,8 @@ def parallel_differential_expression(
         shape=shape,
         dtype=dtype,
         metric=metric,
+        tie_correct=tie_correct,
+        **kwargs,
     )
 
     logger.info("Initializing parallel processing pool")
