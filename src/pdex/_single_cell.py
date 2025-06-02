@@ -12,6 +12,8 @@ from scipy.sparse import csr_matrix
 from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
 from tqdm import tqdm
 
+from ._utils import guess_is_log
+
 # Configure logger
 tools_logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +86,7 @@ def _process_target_batch_shm(
     dtype: np.dtype,
     metric: str,
     tie_correct: bool = False,
+    is_log1p: bool = False,
     **kwargs,
 ) -> list[dict[str, float]]:
     """Process a batch of target gene and feature combinations.
@@ -109,8 +112,8 @@ def _process_target_batch_shm(
         x_tgt = matrix[target_mask, var_index]
         x_ref = matrix[reference_mask, var_index]
 
-        μ_tgt = np.mean(x_tgt)
-        μ_ref = np.mean(x_ref)
+        μ_tgt = _sample_mean(x_tgt, is_log1p=is_log1p)
+        μ_ref = _sample_mean(x_ref, is_log1p=is_log1p)
 
         fc = _fold_change(μ_tgt, μ_ref)
         pcc = _percent_change(μ_tgt, μ_ref)
@@ -187,6 +190,20 @@ def _get_var_index(
     return var_index[0]
 
 
+def _sample_mean(
+    x: np.ndarray,
+    is_log1p: bool,
+) -> float:
+    """Determine the sample mean of a 1D array.
+
+    Exponenentiates and subtracts one if `is_log1p == True`
+    """
+    if is_log1p:
+        return np.exp1m(x).mean()
+    else:
+        return x.mean()
+
+
 def _fold_change(
     μ_tgt: float,
     μ_ref: float,
@@ -216,6 +233,7 @@ def parallel_differential_expression(
     batch_size: int = 100,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
+    is_log1p: bool | None = None,
     **kwargs,
 ) -> pd.DataFrame:
     """Calculate differential expression between groups of cells.
@@ -238,6 +256,9 @@ def parallel_differential_expression(
         The differential expression metric to use [wilcoxon, anderson, t-test]
     tie_correct: bool
         Whether to perform continuity (tie) correction for wilcoxon ranksum test
+    is_log1p: bool, optional
+        Specify exactly whether the data is log1p transformed - will use heuristic to check if not provided
+        (see `pdex._utils.guess_is_log`).
     **kwargs:
         keyword arguments to pass to metric
 
@@ -256,6 +277,9 @@ def parallel_differential_expression(
             if target in groups or target == reference
         ]
     unique_features = adata.var.index
+
+    if not is_log1p:
+        is_log1p = guess_is_log(adata)
 
     # Precompute the number of combinations and batches
     n_combinations = len(unique_targets) * len(unique_features)
@@ -306,6 +330,7 @@ def parallel_differential_expression(
         dtype=dtype,
         metric=metric,
         tie_correct=tie_correct,
+        is_log1p=is_log1p,
         **kwargs,
     )
 
