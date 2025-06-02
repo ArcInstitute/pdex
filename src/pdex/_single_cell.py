@@ -123,13 +123,11 @@ def _process_target_batch_shm(
             match metric:
                 case "wilcoxon":
                     if tie_correct:
-                        print("RUNNING WITH TIE CORRECTION")
                         # default mannwhitneyu behavior
                         de_result = mannwhitneyu(
                             x_tgt, x_ref, use_continuity=True, **kwargs
                         )
                     else:
-                        print("RUNNING WITHOUT TIE CORRECTION")
                         # equivalent to `ranksums` behavior when `use_continuity=False` but statistic changes
                         de_result = mannwhitneyu(
                             x_tgt, x_ref, use_continuity=False, **kwargs
