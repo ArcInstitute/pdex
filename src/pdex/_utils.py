@@ -15,7 +15,7 @@ def guess_is_log(adata: ad.AnnData, num_cells: int | float = 5e2) -> bool:
     mask = np.random.choice(adata.shape[0], size=num_cells, replace=False)
 
     # Sum the matrix across the selected cell subset
-    sums = adata[mask].sum(axis=1)
+    sums = adata[mask].X.sum(axis=1)
 
     # Extract the fractional components of the array
     decimals, _ = np.modf(sums)
