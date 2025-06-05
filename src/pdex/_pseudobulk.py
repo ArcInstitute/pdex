@@ -1,5 +1,6 @@
 import anndata as ad
 import pandas as pd
+import polars as pl
 from adpbulk import ADPBulk
 from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
@@ -18,7 +19,8 @@ def pseudobulk_dex(
     design: str | None = None,
     num_workers: int = 1,
     aggr_method: str = "sum",
-) -> pd.DataFrame:
+    as_polars: bool = False,
+) -> pd.DataFrame | pl.DataFrame:
     """Calculate differential expression between groups of cells after performing a pseudobulk.
 
 
@@ -40,6 +42,8 @@ def pseudobulk_dex(
         Number of workers to use for parallel processing, defaults to 1
     aggr_method: str
         Aggregation method to use in pseudobulk
+    as_polars: bool
+        Return the dataframe as a polars dataframe
 
     Returns
     -------
@@ -101,4 +105,9 @@ def pseudobulk_dex(
         results["reference"] = reference
         all_results.append(results)
 
-    return pd.concat(all_results)
+    all_results = pd.concat(all_results)
+
+    if as_polars:
+        return pl.DataFrame(all_results)
+
+    return all_results
