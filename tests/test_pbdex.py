@@ -1,6 +1,7 @@
 import anndata as ad
 import numpy as np
 import pandas as pd
+import polars as pl
 
 from pdex import pseudobulk_dex
 
@@ -94,3 +95,16 @@ def test_pbdex_two_covar():
         groupby=[PERT_COL, "covar.0", "covar.1"],
     )
     assert results.shape[0] == N_GENES * N_PERTS
+
+
+def test_pbdex_polars_output():
+    adata = build_random_anndata(n_covariates=1)
+    results = pseudobulk_dex(
+        adata,
+        reference=CONTROL_VAR,
+        test_col=PERT_COL,
+        groupby=[PERT_COL, "covar.0"],
+        as_polars=True,
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+    assert isinstance(results, pl.DataFrame)
