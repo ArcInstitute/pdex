@@ -1,6 +1,7 @@
 import anndata as ad
 import numpy as np
 import pandas as pd
+import polars as pl
 from scipy.sparse import csr_matrix
 
 from pdex import parallel_differential_expression
@@ -153,3 +154,15 @@ def test_dex_single_observed_value_anderson():
         groupby_key=PERT_COL,
         metric="anderson",
     )
+
+
+def test_dex_polars_output():
+    adata = build_random_anndata()
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        as_polars=True,
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+    assert isinstance(results, pl.DataFrame)

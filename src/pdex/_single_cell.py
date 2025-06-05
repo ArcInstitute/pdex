@@ -7,6 +7,7 @@ from multiprocessing.shared_memory import SharedMemory
 import anndata as ad
 import numpy as np
 import pandas as pd
+import polars as pl
 from adjustpy import adjust
 from scipy.sparse import csr_matrix
 from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
@@ -232,8 +233,9 @@ def parallel_differential_expression(
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
+    as_polars: bool = False,
     **kwargs,
-) -> pd.DataFrame:
+) -> pd.DataFrame | pl.DataFrame:
     """Calculate differential expression between groups of cells.
 
     Parameters
@@ -257,6 +259,8 @@ def parallel_differential_expression(
     is_log1p: bool, optional
         Specify exactly whether the data is log1p transformed - will use heuristic to check if not provided
         (see `pdex._utils.guess_is_log`).
+    as_polars: bool
+        return the output dataframe as a polars dataframe
     **kwargs:
         keyword arguments to pass to metric
 
@@ -353,5 +357,8 @@ def parallel_differential_expression(
 
     dataframe = pd.DataFrame(results)
     dataframe["fdr"] = adjust(dataframe["p_value"].values, method="bh")
+
+    if as_polars:
+        return pl.DataFrame(dataframe)
 
     return dataframe
