@@ -88,6 +88,7 @@ def _process_target_batch_shm(
     metric: str,
     tie_correct: bool = False,
     is_log1p: bool = False,
+    exp_post_agg: bool = False,
     **kwargs,
 ) -> list[dict[str, float]]:
     """Process a batch of target gene and feature combinations.
@@ -113,8 +114,8 @@ def _process_target_batch_shm(
         x_tgt = matrix[target_mask, var_index]
         x_ref = matrix[reference_mask, var_index]
 
-        μ_tgt = _sample_mean(x_tgt, is_log1p=is_log1p)
-        μ_ref = _sample_mean(x_ref, is_log1p=is_log1p)
+        μ_tgt = _sample_mean(x_tgt, is_log1p=is_log1p, exp_post_agg=exp_post_agg)
+        μ_ref = _sample_mean(x_ref, is_log1p=is_log1p, exp_post_agg=exp_post_agg)
 
         fc = _fold_change(μ_tgt, μ_ref)
         pcc = _percent_change(μ_tgt, μ_ref)
@@ -192,13 +193,19 @@ def _get_var_index(
 def _sample_mean(
     x: np.ndarray,
     is_log1p: bool,
+    exp_post_agg: bool,
 ) -> float:
     """Determine the sample mean of a 1D array.
 
     Exponenentiates and subtracts one if `is_log1p == True`
+
+    User can decide whether to exponentiate before or after aggregation.
     """
     if is_log1p:
-        return np.expm1(x).mean()
+        if exp_post_agg:
+            return np.expm1(np.mean(x))
+        else:
+            return np.expm1(x).mean()
     else:
         return x.mean()
 
@@ -233,6 +240,7 @@ def parallel_differential_expression(
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
+    exp_post_agg: bool = False,
     as_polars: bool = False,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
@@ -259,6 +267,9 @@ def parallel_differential_expression(
     is_log1p: bool, optional
         Specify exactly whether the data is log1p transformed - will use heuristic to check if not provided
         (see `pdex._utils.guess_is_log`).
+    exp_post_agg: bool
+        Whether to perform exponential post-aggregation for calculating fold change
+        (default: perform exponential pre-aggregation)
     as_polars: bool
         return the output dataframe as a polars dataframe
     **kwargs:
@@ -333,6 +344,7 @@ def parallel_differential_expression(
         metric=metric,
         tie_correct=tie_correct,
         is_log1p=is_log1p,
+        exp_post_agg=exp_post_agg,
         **kwargs,
     )
 
