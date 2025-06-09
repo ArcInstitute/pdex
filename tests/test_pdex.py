@@ -64,6 +64,18 @@ def test_dex_dense_array_log():
     assert results.shape[0] == N_GENES * N_PERTS
 
 
+def test_dex_dense_array_log_post_agg():
+    adata = build_random_anndata()
+    adata.X = np.log1p(adata.X)
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        exp_post_agg=True,
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+
+
 def test_dex_dense_matrix():
     adata = build_random_anndata()
     adata.X = np.matrix(adata.X)
