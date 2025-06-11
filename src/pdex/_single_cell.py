@@ -88,7 +88,7 @@ def _process_target_batch_shm(
     metric: str,
     tie_correct: bool = False,
     is_log1p: bool = False,
-    exp_post_agg: bool = False,
+    exp_post_agg: bool = True,
     **kwargs,
 ) -> list[dict[str, float]]:
     """Process a batch of target gene and feature combinations.
@@ -240,7 +240,7 @@ def parallel_differential_expression(
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
-    exp_post_agg: bool = False,
+    exp_post_agg: bool = True,
     as_polars: bool = False,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
@@ -269,7 +269,7 @@ def parallel_differential_expression(
         (see `pdex._utils.guess_is_log`).
     exp_post_agg: bool
         Whether to perform exponential post-aggregation for calculating fold change
-        (default: perform exponential pre-aggregation)
+        (default: perform exponential post-aggregation)
     as_polars: bool
         return the output dataframe as a polars dataframe
     **kwargs:
