@@ -3,7 +3,7 @@ import numpy as np
 
 # A heuristic to determine if the data is log-transformed
 # Checks if the mean cell umi count is greater than a certain threshold
-# If the the mean cell umi count is < UPPER_LIMIT_LOG, it is assumed that the data is not log-transformed
+# If the the mean cell umi count is < UPPER_LIMIT_LOG, it is assumed that the data is log-transformed
 #
 # This limit is set to 15 (log-data with >15 average UMI counts would mean an
 # average UMI count of ($ e^{15} - 1 = 3.26M $ ) which is unlikely at this point)
