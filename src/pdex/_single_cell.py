@@ -8,8 +8,8 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import polars as pl
-from adjustpy import adjust
-from scipy.sparse import csr_matrix
+from adjustpy import adjust  # type: ignore
+from scipy.sparse import csc_matrix, csr_matrix
 from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
 from tqdm import tqdm
 
@@ -24,13 +24,17 @@ KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
 
 def _build_shared_matrix(
-    data: np.ndarray | np.matrix | csr_matrix,
+    data: np.ndarray | np.matrix | csr_matrix | csc_matrix,
 ) -> tuple[str, tuple[int, int], np.dtype]:
     """Create a shared memory matrix from a numpy array."""
     if isinstance(data, np.matrix):
         data = np.asarray(data)
-    elif isinstance(data, csr_matrix):
+    elif isinstance(data, csr_matrix) or isinstance(data, csc_matrix):
         data = data.toarray()
+
+    # data should be a numpy array at this point
+    assert isinstance(data, np.ndarray)
+
     shared_matrix = SharedMemory(create=True, size=data.nbytes)
     matrix = np.ndarray(data.shape, dtype=data.dtype, buffer=shared_matrix.buf)
     matrix[:] = data
@@ -48,8 +52,8 @@ def _combinations_generator(
     target_masks: dict[str, np.ndarray],
     var_indices: dict[str, int],
     reference: str,
-    target_list: list[str],
-    feature_list: list[str],
+    target_list: list[str] | np.ndarray,
+    feature_list: list[str] | np.ndarray,
 ) -> Iterator[tuple]:
     """Generate all combinations of target genes and features."""
     for target in target_list:
@@ -137,10 +141,10 @@ def _process_target_batch_shm(
                     pval, stat = (de_result.pvalue, de_result.statistic)
                 case "anderson":
                     de_result = anderson_ksamp([x_tgt, x_ref], **kwargs)
-                    pval, stat = (de_result.pvalue, de_result.statistic)
+                    pval, stat = (de_result.pvalue, de_result.statistic)  # type: ignore (has attributes pvalue and statistic)
                 case "t-test":
                     de_result = ttest_ind(x_tgt, x_ref, **kwargs)
-                    pval, stat = (de_result.pvalue, de_result.statistic)
+                    pval, stat = (de_result.pvalue, de_result.statistic)  # type: ignore (has attributes pvalue and statistic)
                 case _:
                     raise KeyError(f"Unknown Metric: {metric}")
         except ValueError:
@@ -282,14 +286,14 @@ def parallel_differential_expression(
     if metric not in KNOWN_METRICS:
         raise ValueError(f"Unknown metric: {metric} :: Expecting: {KNOWN_METRICS}")
 
-    unique_targets = adata.obs[groupby_key].unique()
+    unique_targets = np.array(adata.obs[groupby_key].unique())
     if groups is not None:
         unique_targets = [
             target
             for target in unique_targets
             if target in groups or target == reference
         ]
-    unique_features = adata.var.index
+    unique_features = np.array(adata.var.index)
 
     if not is_log1p:
         is_log1p = guess_is_log(adata)
@@ -318,7 +322,7 @@ def parallel_differential_expression(
 
     # Isolate the data matrix from the AnnData object
     logger.info("Creating shared memory memory matrix for parallel computing")
-    (shm_name, shape, dtype) = _build_shared_matrix(data=adata.X)
+    (shm_name, shape, dtype) = _build_shared_matrix(data=adata.X)  # type: ignore
 
     logger.info(f"Creating generator of all combinations: N={n_combinations}")
     combinations = _combinations_generator(

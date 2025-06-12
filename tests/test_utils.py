@@ -13,7 +13,7 @@ def build_anndata(log=False) -> ad.AnnData:
     return ad.AnnData(
         X=np.random.random(size=dim)
         if log
-        else np.random.randint(0, MAX_COUNT, size=dim)
+        else np.random.randint(0, int(MAX_COUNT), size=dim)
     )
 
 
