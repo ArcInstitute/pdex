@@ -93,7 +93,7 @@ def _process_target_batch_shm(
     tie_correct: bool = False,
     is_log1p: bool = False,
     exp_post_agg: bool = True,
-    clip_value: float | int = 20,
+    clip_value: float | int | None = 20,
     **kwargs,
 ) -> list[dict[str, float]]:
     """Process a batch of target gene and feature combinations.
@@ -119,8 +119,9 @@ def _process_target_batch_shm(
         Whether to apply log1p transformation.
     exp_post_agg: bool = True
         Whether to apply exponential post-aggregation.
-    clip_value: float | int = 20
+    clip_value: float | int | None
         Default clip value used when log-fold-changes would be NaN or Inf.
+        Ignore clipping if set to None.
         fold_change = (
             1/default_clip_value
             if fold_change == inf
@@ -248,16 +249,16 @@ def _sample_mean(
 def _fold_change(
     μ_tgt: float,
     μ_ref: float,
-    clip_value: float | int = 20,
+    clip_value: float | int | None = 20,
 ) -> float:
     """Calculate the fold change between two means."""
     # The fold change is infinite so clip to default value
     if μ_ref == 0:
-        return clip_value
+        return np.nan if clip_value is None else clip_value
 
     # The fold change is zero so clip to 1 / default value
     if μ_tgt == 0:
-        return 1 / clip_value
+        return 0 if clip_value is None else 1 / clip_value
 
     # Return the fold change
     return μ_tgt / μ_ref
@@ -284,6 +285,7 @@ def parallel_differential_expression(
     tie_correct: bool = True,
     is_log1p: bool | None = None,
     exp_post_agg: bool = True,
+    clip_value: float | int | None = 20.0,
     as_polars: bool = False,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
@@ -313,6 +315,8 @@ def parallel_differential_expression(
     exp_post_agg: bool
         Whether to perform exponential post-aggregation for calculating fold change
         (default: perform exponential post-aggregation)
+    clip_value: float | int | None
+        Value to clip fold change to if it is infinite or NaN (default: 20.0). Set to None to disable clipping.
     as_polars: bool
         return the output dataframe as a polars dataframe
     **kwargs:
@@ -388,6 +392,7 @@ def parallel_differential_expression(
         tie_correct=tie_correct,
         is_log1p=is_log1p,
         exp_post_agg=exp_post_agg,
+        clip_value=clip_value,
         **kwargs,
     )
 
