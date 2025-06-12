@@ -3,12 +3,14 @@ import multiprocessing as mp
 from collections.abc import Iterator
 from functools import partial
 from multiprocessing.shared_memory import SharedMemory
+from typing import Any
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 import polars as pl
-from adjustpy import adjust
+from adjustpy import adjust  # type: ignore (exists but not annotated)
+from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
 from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
 from tqdm import tqdm
@@ -25,15 +27,20 @@ KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
 def _build_shared_matrix(
     data: np.ndarray | np.matrix | csr_matrix,
-) -> tuple[str, tuple[int, int], np.dtype]:
+) -> tuple[str, tuple[int, ...], np.dtype[Any]]:
     """Create a shared memory matrix from a numpy array."""
     if isinstance(data, np.matrix):
         data = np.asarray(data)
     elif isinstance(data, csr_matrix):
         data = data.toarray()
+
+    # After conversion enforce ndarray type
+    assert isinstance(data, np.ndarray)
+
     shared_matrix = SharedMemory(create=True, size=data.nbytes)
     matrix = np.ndarray(data.shape, dtype=data.dtype, buffer=shared_matrix.buf)
     matrix[:] = data
+
     return shared_matrix.name, data.shape, data.dtype
 
 
@@ -45,7 +52,7 @@ def _conclude_shared_memory(name: str):
 
 
 def _combinations_generator(
-    target_masks: dict[str, np.ndarray],
+    target_masks: dict[str, NDArray[bool]],
     var_indices: dict[str, int],
     reference: str,
     target_list: list[str],
@@ -168,9 +175,9 @@ def _get_obs_mask(
     adata: ad.AnnData,
     target_name: str,
     variable_name: str = "target_gene",
-) -> np.ndarray:
+) -> NDArray[bool]:
     """Return a boolean mask for a specific target name in the obs variable."""
-    return adata.obs[variable_name] == target_name
+    return np.array(adata.obs[variable_name] == target_name, dtype=bool)
 
 
 def _get_var_index(
@@ -191,7 +198,7 @@ def _get_var_index(
 
 
 def _sample_mean(
-    x: np.ndarray,
+    x: NDArray[float],
     is_log1p: bool,
     exp_post_agg: bool,
 ) -> float:
@@ -203,7 +210,7 @@ def _sample_mean(
     """
     if is_log1p:
         if exp_post_agg:
-            return np.expm1(np.mean(x))
+            return np.expm1(x.mean())
         else:
             return np.expm1(x).mean()
     else:

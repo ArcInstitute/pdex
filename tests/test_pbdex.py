@@ -52,9 +52,9 @@ def build_random_anndata(
         ]
 
     return ad.AnnData(
-        X=np.random.randint(0, MAX_UMI, size=(n_cells, n_genes)),
+        X=np.random.randint(low=0, high=int(MAX_UMI), size=(n_cells, n_genes)),
         obs=obs,
-        var=pd.DataFrame(index=[f"gene.{j}" for j in np.arange(N_GENES)]),
+        var=pd.DataFrame(index=np.array([f"gene.{j}" for j in np.arange(N_GENES)])),
     )
 
 

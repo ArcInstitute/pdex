@@ -29,7 +29,7 @@ def build_random_anndata(
     if random_state is not None:
         np.random.seed(random_state)
     return ad.AnnData(
-        X=np.random.randint(0, MAX_UMI, size=(n_cells, n_genes)),
+        X=np.random.randint(0, int(MAX_UMI), size=(n_cells, n_genes)),
         obs=pd.DataFrame(
             {
                 pert_col: np.random.choice(
