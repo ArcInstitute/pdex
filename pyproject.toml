@@ -23,12 +23,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = [
-    "pyrefly>=0.19.0",
-    "pytest>=8.3.5",
-    "ruff>=0.11.8",
-]
-
-[tool.pyrefly]
-venvPath = "."
-venv = ".venv"
+dev = ["pyrefly>=0.19.0", "pytest>=8.3.5", "ruff>=0.11.8"]
