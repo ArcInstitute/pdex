@@ -29,7 +29,7 @@ def build_random_anndata(
     if random_state is not None:
         np.random.seed(random_state)
     return ad.AnnData(
-        X=np.random.randint(0, MAX_UMI, size=(n_cells, n_genes)),
+        X=np.random.randint(0, int(MAX_UMI), size=(n_cells, n_genes)),
         obs=pd.DataFrame(
             {
                 pert_col: np.random.choice(
@@ -55,7 +55,7 @@ def test_dex_dense_array():
 
 def test_dex_dense_array_log():
     adata = build_random_anndata()
-    adata.X = np.log1p(adata.X)
+    adata.X = np.log1p(adata.X)  # type: ignore
     results = parallel_differential_expression(
         adata,
         reference=CONTROL_VAR,
@@ -66,7 +66,7 @@ def test_dex_dense_array_log():
 
 def test_dex_dense_array_log_post_agg():
     adata = build_random_anndata()
-    adata.X = np.log1p(adata.X)
+    adata.X = np.log1p(adata.X)  # type: ignore
     results = parallel_differential_expression(
         adata,
         reference=CONTROL_VAR,
@@ -78,7 +78,7 @@ def test_dex_dense_array_log_post_agg():
 
 def test_dex_dense_matrix():
     adata = build_random_anndata()
-    adata.X = np.matrix(adata.X)
+    adata.X = np.matrix(adata.X)  # type: ignore
     results = parallel_differential_expression(
         adata,
         reference=CONTROL_VAR,
