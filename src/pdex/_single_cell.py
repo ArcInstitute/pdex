@@ -8,9 +8,8 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import polars as pl
-from adjustpy import adjust  # type: ignore
 from scipy.sparse import csc_matrix, csr_matrix
-from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
+from scipy.stats import anderson_ksamp, false_discovery_control, mannwhitneyu, ttest_ind
 from tqdm import tqdm
 
 from ._utils import guess_is_log
@@ -416,7 +415,7 @@ def parallel_differential_expression(
     _conclude_shared_memory(shm_name)
 
     dataframe = pd.DataFrame(results)
-    dataframe["fdr"] = adjust(dataframe["p_value"].values, method="bh")
+    dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
 
     if as_polars:
         return pl.DataFrame(dataframe)
