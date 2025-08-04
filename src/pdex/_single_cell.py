@@ -24,7 +24,7 @@ KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
 def _build_shared_matrix(
     data: np.ndarray | np.matrix | csr_matrix | csc_matrix,
-) -> tuple[str, tuple[int, int], np.dtype]:
+) -> tuple[SharedMemory, tuple[int, int], np.dtype]:
     """Create a shared memory matrix from a numpy array."""
     if isinstance(data, np.matrix):
         data = np.asarray(data)
@@ -37,14 +37,13 @@ def _build_shared_matrix(
     shared_matrix = SharedMemory(create=True, size=data.nbytes)
     matrix = np.ndarray(data.shape, dtype=data.dtype, buffer=shared_matrix.buf)
     matrix[:] = data
-    return shared_matrix.name, data.shape, data.dtype
+    return shared_matrix, data.shape, data.dtype
 
 
-def _conclude_shared_memory(name: str):
+def _conclude_shared_memory(shared_memory: SharedMemory):
     """Close and unlink a shared memory."""
-    shm = SharedMemory(name=name)
-    shm.close()
-    shm.unlink()
+    shared_memory.close()
+    shared_memory.unlink()
 
 
 def _combinations_generator(
@@ -364,7 +363,8 @@ def parallel_differential_expression(
 
     # Isolate the data matrix from the AnnData object
     logger.info("Creating shared memory memory matrix for parallel computing")
-    (shm_name, shape, dtype) = _build_shared_matrix(data=adata.X)  # type: ignore
+    (shared_memory, shape, dtype) = _build_shared_matrix(data=adata.X)  # type: ignore
+    shm_name = shared_memory.name
 
     logger.info(f"Creating generator of all combinations: N={n_combinations}")
     combinations = _combinations_generator(
@@ -412,7 +412,7 @@ def parallel_differential_expression(
 
     # Close shared memory
     logger.info("Closing shared memory pool")
-    _conclude_shared_memory(shm_name)
+    _conclude_shared_memory(shared_memory)
 
     dataframe = pd.DataFrame(results)
     dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
