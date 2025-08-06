@@ -421,3 +421,159 @@ def parallel_differential_expression(
         return pl.DataFrame(dataframe)
 
     return dataframe
+
+
+def _vectorized_ranksum_test(
+    X_target: np.ndarray, X_ref: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized Wilcoxon rank-sum test across all genes simultaneously."""
+    n_target, n_genes = X_target.shape
+    n_ref = X_ref.shape[0]
+
+    if n_target == 0 or n_ref == 0:
+        return np.ones(n_genes), np.full(n_genes, np.nan)
+
+    # Combine target and reference for each gene
+    combined_shape = (n_target + n_ref, n_genes)
+    combined = np.empty(combined_shape)
+    combined[:n_target] = X_target
+    combined[n_target:] = X_ref
+
+    # Vectorized ranking across all genes at once
+    ranks = np.empty_like(combined)
+    for i in range(n_genes):
+        ranks[:, i] = np.argsort(np.argsort(combined[:, i])) + 1
+
+    # Sum ranks for target group across all genes
+    rank_sums = np.sum(ranks[:n_target, :], axis=0)
+
+    # Vectorized U-statistic calculation
+    u_stats = rank_sums - n_target * (n_target + 1) / 2
+
+    # Vectorized p-value calculation using normal approximation
+    mu = n_target * n_ref / 2
+    sigma = np.sqrt(n_target * n_ref * (n_target + n_ref + 1) / 12)
+
+    # Handle zero variance case
+    z_scores = np.where(sigma > 0, (u_stats - mu) / sigma, 0)
+
+    # Two-tailed p-values using normal approximation
+    from scipy.stats import norm
+
+    p_values = 2 * (1 - norm.cdf(np.abs(z_scores)))
+
+    return p_values, u_stats
+
+
+def parallel_differential_expression_vec(
+    adata: ad.AnnData,
+    groups: list[str] | None = None,
+    reference: str = "non-targeting",
+    groupby_key: str = "target_gene",
+    metric: str = "wilcoxon",
+    is_log1p: bool | None = None,
+    exp_post_agg: bool = True,
+    clip_value: float | int | None = 20.0,
+    as_polars: bool = False,
+) -> pd.DataFrame | pl.DataFrame:
+    if metric != "wilcoxon":
+        raise ValueError("This implementation currently only supports wilcoxon test")
+
+    # Get unique targets efficiently
+    obs_values = adata.obs[groupby_key].values
+    unique_targets = np.unique(obs_values)
+
+    if groups is not None:
+        mask = np.isin(unique_targets, groups + [reference])
+        unique_targets = unique_targets[mask]
+
+    if not is_log1p:
+        is_log1p = guess_is_log(adata)
+
+    logger.info(
+        f"vectorized processing: {len(unique_targets)} targets, {adata.n_vars} genes"
+    )
+
+    # Convert to dense matrix for fastest access
+    if hasattr(adata.X, "toarray"):
+        X = adata.X.toarray().astype(np.float32)
+    else:
+        X = np.asarray(adata.X, dtype=np.float32)
+
+    # Get reference data once
+    reference_mask = obs_values == reference
+    X_ref = X[reference_mask, :]
+
+    # Compute reference means once for all genes
+    if is_log1p:
+        if exp_post_agg:
+            means_ref = np.expm1(np.mean(X_ref, axis=0))
+        else:
+            means_ref = np.mean(np.expm1(X_ref), axis=0)
+    else:
+        means_ref = np.mean(X_ref, axis=0)
+
+    # Process all targets
+    all_results = []
+    gene_names = adata.var.index.values
+
+    for target in tqdm(unique_targets, desc="Processing targets"):
+        if target == reference:
+            continue
+
+        # Get target data
+        target_mask = obs_values == target
+        X_target = X[target_mask, :]
+
+        # Vectorized means calculation
+        if is_log1p:
+            if exp_post_agg:
+                means_target = np.expm1(np.mean(X_target, axis=0))
+            else:
+                means_target = np.mean(np.expm1(X_target), axis=0)
+        else:
+            means_target = np.mean(X_target, axis=0)
+
+        # Vectorized fold change and percent change across all genes at once
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fc = means_target / means_ref
+            pcc = (means_target - means_ref) / means_ref
+
+            if clip_value is not None:
+                fc = np.where(means_ref == 0, clip_value, fc)
+                fc = np.where(means_target == 0, 1 / clip_value, fc)
+            else:
+                fc = np.where(means_ref == 0, np.nan, fc)
+                fc = np.where(means_target == 0, 0, fc)
+
+            pcc = np.where(means_ref == 0, np.nan, pcc)
+
+        # Statistical tests across all genes simultaneously
+        p_values, statistics = _vectorized_ranksum_test(X_target, X_ref)
+
+        # Build results for all genes at once using vectorized operations
+        target_results = [
+            {
+                "target": target,
+                "reference": reference,
+                "feature": gene_names[i],
+                "target_mean": means_target[i],
+                "reference_mean": means_ref[i],
+                "percent_change": pcc[i],
+                "fold_change": fc[i],
+                "p_value": p_values[i],
+                "statistic": statistics[i],
+            }
+            for i in range(len(gene_names))
+        ]
+
+        all_results.extend(target_results)
+
+    # Create dataframe
+    dataframe = pd.DataFrame(all_results)
+    dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
+
+    if as_polars:
+        return pl.DataFrame(dataframe)
+
+    return dataframe
