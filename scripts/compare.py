@@ -14,8 +14,8 @@ from pdex import (
 # N_CELLS = 300
 # N_GENES = 1000
 
-N_CELLS = 100
-N_GENES = 500
+N_CELLS = 1000
+N_GENES = 5000
 
 N_PERTS = 300
 PERT_COL = "perturbation"
@@ -132,24 +132,39 @@ def benchmark_implementations():
         reference=CONTROL_VAR,
         groupby_key=PERT_COL,
         metric="wilcoxon",
-        num_workers=1,
+        num_workers=16,
         batch_size=100,
     )
     timings["reference"] = time.time() - start
     print(f"   Time: {timings['reference']:.3f} seconds")
 
-    # Test vec implementation
-    print("\n2. Vectorized implementation:")
+    # Test vec implementation (single worker)
+    print("\n2. Vectorized implementation (1 worker):")
     start = time.time()
     results["vec"] = parallel_differential_expression_vec(
         adata,
         reference=CONTROL_VAR,
         groupby_key=PERT_COL,
         metric="wilcoxon",
+        num_workers=1,
     )
     timings["vec"] = time.time() - start
     print(f"   Time: {timings['vec']:.3f} seconds")
     print(f"   Speedup: {timings['reference']/timings['vec']:.1f}x")
+    
+    # Test vec implementation (4 workers)
+    print("\n3. Vectorized implementation (4 workers):")
+    start = time.time()
+    results_4workers = parallel_differential_expression_vec(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="wilcoxon",
+        num_workers=4,
+    )
+    timings["vec_4workers"] = time.time() - start
+    print(f"   Time: {timings['vec_4workers']:.3f} seconds")
+    print(f"   Speedup: {timings['reference']/timings['vec_4workers']:.1f}x")
 
     # Verify correctness
     print("\n" + "=" * 60)

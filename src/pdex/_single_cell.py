@@ -1,13 +1,17 @@
 import logging
 import multiprocessing as mp
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from multiprocessing.shared_memory import SharedMemory
 
 import anndata as ad
+import numba
 import numpy as np
 import pandas as pd
 import polars as pl
+from numba import njit, prange
 from scipy.sparse import csc_matrix, csr_matrix
 from scipy.stats import anderson_ksamp, false_discovery_control, mannwhitneyu, ttest_ind
 from tqdm import tqdm
@@ -423,6 +427,145 @@ def parallel_differential_expression(
     return dataframe
 
 
+@njit
+def _compute_means_numba(X: np.ndarray, mask: np.ndarray, is_log1p: bool, exp_post_agg: bool) -> np.ndarray:
+    """Numba-compiled function to compute means for a masked dataset."""
+    X_masked = X[mask, :]
+    n_samples, n_genes = X_masked.shape
+    means = np.empty(n_genes)
+    
+    for i in range(n_genes):
+        if is_log1p:
+            if exp_post_agg:
+                means[i] = np.expm1(np.mean(X_masked[:, i]))
+            else:
+                means[i] = np.mean(np.expm1(X_masked[:, i]))
+        else:
+            means[i] = np.mean(X_masked[:, i])
+    
+    return means
+
+
+@njit
+def _compute_fold_change_numba(means_target: np.ndarray, means_ref: np.ndarray, clip_value: float) -> np.ndarray:
+    """Numba-compiled function to compute fold changes."""
+    n_genes = means_target.shape[0]
+    fc = np.empty(n_genes)
+    
+    for i in range(n_genes):
+        if means_ref[i] == 0:
+            fc[i] = clip_value if not np.isnan(clip_value) else np.nan
+        elif means_target[i] == 0:
+            fc[i] = 1.0 / clip_value if not np.isnan(clip_value) else 0.0
+        else:
+            fc[i] = means_target[i] / means_ref[i]
+    
+    return fc
+
+
+@njit
+def _compute_percent_change_numba(means_target: np.ndarray, means_ref: np.ndarray) -> np.ndarray:
+    """Numba-compiled function to compute percent changes."""
+    n_genes = means_target.shape[0]
+    pcc = np.empty(n_genes)
+    
+    for i in range(n_genes):
+        if means_ref[i] == 0:
+            pcc[i] = np.nan
+        else:
+            pcc[i] = (means_target[i] - means_ref[i]) / means_ref[i]
+    
+    return pcc
+
+
+@njit
+def _ranksum_single_gene_numba(x_target: np.ndarray, x_ref: np.ndarray) -> tuple[float, float]:
+    """Numba-compiled Wilcoxon rank-sum test for a single gene."""
+    n_target = x_target.shape[0]
+    n_ref = x_ref.shape[0]
+    
+    if n_target == 0 or n_ref == 0:
+        return 1.0, np.nan
+    
+    # Combine and rank
+    combined = np.concatenate((x_target, x_ref))
+    ranks = np.empty_like(combined)
+    
+    # Simple ranking (could be optimized further)
+    sorted_indices = np.argsort(combined)
+    for i in range(len(combined)):
+        ranks[sorted_indices[i]] = i + 1
+    
+    # Sum ranks for target group
+    rank_sum = np.sum(ranks[:n_target])
+    
+    # U-statistic
+    u_stat = rank_sum - n_target * (n_target + 1) / 2
+    
+    # Normal approximation
+    mu = n_target * n_ref / 2
+    sigma = np.sqrt(n_target * n_ref * (n_target + n_ref + 1) / 12)
+    
+    if sigma == 0:
+        return 1.0, u_stat
+    
+    z_score = (u_stat - mu) / sigma
+    # Approximate p-value using normal CDF (simplified)
+    # For more accuracy, would need to implement erf function
+    p_value = 2 * (1 - 0.5 * (1 + np.tanh(np.abs(z_score) * np.sqrt(2 / np.pi))))
+    
+    return p_value, u_stat
+
+
+@njit(parallel=True)
+def _process_all_targets_numba(
+    X: np.ndarray,
+    X_ref: np.ndarray, 
+    means_ref: np.ndarray,
+    target_masks: np.ndarray,
+    target_indices: np.ndarray,
+    is_log1p: bool,
+    exp_post_agg: bool,
+    clip_value: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Process all targets in parallel using numba."""
+    n_targets = target_indices.shape[0]
+    n_genes = X.shape[1]
+    
+    # Pre-allocate output arrays
+    target_means_out = np.empty((n_targets, n_genes))
+    fold_changes_out = np.empty((n_targets, n_genes))
+    percent_changes_out = np.empty((n_targets, n_genes))
+    p_values_out = np.empty((n_targets, n_genes))
+    statistics_out = np.empty((n_targets, n_genes))
+    
+    # Process each target in parallel
+    for t in prange(n_targets):
+        target_idx = target_indices[t]
+        
+        # Get target mask and data
+        target_mask = target_masks[target_idx]
+        means_target = _compute_means_numba(X, target_mask, is_log1p, exp_post_agg)
+        
+        # Compute fold changes and percent changes
+        fold_changes = _compute_fold_change_numba(means_target, means_ref, clip_value)
+        percent_changes = _compute_percent_change_numba(means_target, means_ref)
+        
+        # Store results
+        target_means_out[t, :] = means_target
+        fold_changes_out[t, :] = fold_changes
+        percent_changes_out[t, :] = percent_changes
+        
+        # Compute statistical tests for each gene
+        X_target = X[target_mask, :]
+        for g in range(n_genes):
+            p_val, stat = _ranksum_single_gene_numba(X_target[:, g], X_ref[:, g])
+            p_values_out[t, g] = p_val
+            statistics_out[t, g] = stat
+    
+    return target_means_out, fold_changes_out, percent_changes_out, p_values_out, statistics_out
+
+
 def _vectorized_ranksum_test(
     X_target: np.ndarray, X_ref: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -465,11 +608,78 @@ def _vectorized_ranksum_test(
     return p_values, u_stats
 
 
+
+def _process_single_target_vectorized(
+    target: str,
+    reference: str,
+    obs_values: np.ndarray,
+    X: np.ndarray,
+    X_ref: np.ndarray,
+    means_ref: np.ndarray,
+    gene_names: np.ndarray,
+    is_log1p: bool,
+    exp_post_agg: bool,
+    clip_value: float | int | None,
+) -> list[dict]:
+    """Process a single target using vectorized operations."""
+    if target == reference:
+        return []
+
+    # Get target data
+    target_mask = obs_values == target
+    X_target = X[target_mask, :]
+
+    # Vectorized means calculation
+    if is_log1p:
+        if exp_post_agg:
+            means_target = np.expm1(np.mean(X_target, axis=0))
+        else:
+            means_target = np.mean(np.expm1(X_target), axis=0)
+    else:
+        means_target = np.mean(X_target, axis=0)
+
+    # Vectorized fold change and percent change across all genes at once
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fc = means_target / means_ref
+        pcc = (means_target - means_ref) / means_ref
+
+        if clip_value is not None:
+            fc = np.where(means_ref == 0, clip_value, fc)
+            fc = np.where(means_target == 0, 1 / clip_value, fc)
+        else:
+            fc = np.where(means_ref == 0, np.nan, fc)
+            fc = np.where(means_target == 0, 0, fc)
+
+        pcc = np.where(means_ref == 0, np.nan, pcc)
+
+    # Statistical tests across all genes simultaneously
+    p_values, statistics = _vectorized_ranksum_test(X_target, X_ref)
+
+    # Build results for all genes at once using vectorized operations
+    target_results = [
+        {
+            "target": target,
+            "reference": reference,
+            "feature": gene_names[i],
+            "target_mean": means_target[i],
+            "reference_mean": means_ref[i],
+            "percent_change": pcc[i],
+            "fold_change": fc[i],
+            "p_value": p_values[i],
+            "statistic": statistics[i],
+        }
+        for i in range(len(gene_names))
+    ]
+
+    return target_results
+
+
 def parallel_differential_expression_vec(
     adata: ad.AnnData,
     groups: list[str] | None = None,
     reference: str = "non-targeting",
     groupby_key: str = "target_gene",
+    num_workers: int = 1,
     metric: str = "wilcoxon",
     is_log1p: bool | None = None,
     exp_post_agg: bool = True,
@@ -513,61 +723,76 @@ def parallel_differential_expression_vec(
     else:
         means_ref = np.mean(X_ref, axis=0)
 
-    # Process all targets
-    all_results = []
+    # Filter out reference target for parallel processing
+    targets_to_process = [target for target in unique_targets if target != reference]
     gene_names = adata.var.index.values
 
-    for target in tqdm(unique_targets, desc="Processing targets"):
-        if target == reference:
-            continue
-
-        # Get target data
-        target_mask = obs_values == target
-        X_target = X[target_mask, :]
-
-        # Vectorized means calculation
-        if is_log1p:
-            if exp_post_agg:
-                means_target = np.expm1(np.mean(X_target, axis=0))
-            else:
-                means_target = np.mean(np.expm1(X_target), axis=0)
-        else:
-            means_target = np.mean(X_target, axis=0)
-
-        # Vectorized fold change and percent change across all genes at once
-        with np.errstate(divide="ignore", invalid="ignore"):
-            fc = means_target / means_ref
-            pcc = (means_target - means_ref) / means_ref
-
-            if clip_value is not None:
-                fc = np.where(means_ref == 0, clip_value, fc)
-                fc = np.where(means_target == 0, 1 / clip_value, fc)
-            else:
-                fc = np.where(means_ref == 0, np.nan, fc)
-                fc = np.where(means_target == 0, 0, fc)
-
-            pcc = np.where(means_ref == 0, np.nan, pcc)
-
-        # Statistical tests across all genes simultaneously
-        p_values, statistics = _vectorized_ranksum_test(X_target, X_ref)
-
-        # Build results for all genes at once using vectorized operations
-        target_results = [
-            {
-                "target": target,
-                "reference": reference,
-                "feature": gene_names[i],
-                "target_mean": means_target[i],
-                "reference_mean": means_ref[i],
-                "percent_change": pcc[i],
-                "fold_change": fc[i],
-                "p_value": p_values[i],
-                "statistic": statistics[i],
-            }
-            for i in range(len(gene_names))
-        ]
-
-        all_results.extend(target_results)
+    # Use numba for fast parallel processing
+    if num_workers == 1:
+        logger.info(f"Processing {len(targets_to_process)} targets sequentially")
+        # Sequential processing for comparison
+        all_results = []
+        for target in tqdm(targets_to_process, desc="Processing targets"):
+            target_results = _process_single_target_vectorized(
+                target=target,
+                reference=reference,
+                obs_values=obs_values,
+                X=X,
+                X_ref=X_ref,
+                means_ref=means_ref,
+                gene_names=gene_names,
+                is_log1p=is_log1p,
+                exp_post_agg=exp_post_agg,
+                clip_value=clip_value,
+            )
+            all_results.extend(target_results)
+    else:
+        # Use numba parallel processing
+        logger.info(f"Processing {len(targets_to_process)} targets with numba parallel processing")
+        
+        # Prepare data for numba
+        target_names_filtered = np.array(targets_to_process)
+        n_targets = len(target_names_filtered)
+        
+        # Create target masks array and indices
+        target_masks_dict = {}
+        target_indices = []
+        
+        for i, target in enumerate(target_names_filtered):
+            mask = obs_values == target
+            target_masks_dict[i] = mask
+            target_indices.append(i)
+        
+        # Convert to arrays that numba can handle
+        target_masks_array = np.array([target_masks_dict[i] for i in target_indices])
+        target_indices_array = np.array(target_indices)
+        
+        # Handle clip_value for numba
+        clip_val = clip_value if clip_value is not None else np.nan
+        
+        # Process all targets in parallel with numba
+        (target_means_out, fold_changes_out, percent_changes_out, 
+         p_values_out, statistics_out) = _process_all_targets_numba(
+            X, X_ref, means_ref, target_masks_array, target_indices_array,
+            is_log1p, exp_post_agg, clip_val
+        )
+        
+        # Convert results back to list format
+        all_results = []
+        for t in range(n_targets):
+            target_name = target_names_filtered[t]
+            for g in range(len(gene_names)):
+                all_results.append({
+                    "target": target_name,
+                    "reference": reference,
+                    "feature": gene_names[g],
+                    "target_mean": target_means_out[t, g],
+                    "reference_mean": means_ref[g],
+                    "percent_change": percent_changes_out[t, g],
+                    "fold_change": fold_changes_out[t, g],
+                    "p_value": p_values_out[t, g],
+                    "statistic": statistics_out[t, g],
+                })
 
     # Create dataframe
     dataframe = pd.DataFrame(all_results)
