@@ -84,3 +84,96 @@ def main():
     )
     assert results.shape[0] == N_GENES * N_PERTS
 ```
+
+
+## Updates
+
+This repo contains a few recent updates to test the performance of vectorized operations for statistical tests in comparison to multiprocessing batches.
+
+The two function added are `_vectorized_ranksum_test` and `parallel_differential_expression_vec` in [src/pdex/_single_cell.py](src/pdex/_single_cell.py).
+
+### Run benchmarks
+
+```bash
+uv run python -m pytest benches/basic.py
+```
+
+output:
+
+```txt
+=================================================================================================== test session starts ====================================================================================================
+platform darwin -- Python 3.10.15, pytest-8.4.1, pluggy-1.6.0
+benchmark: 5.1.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /Users/drbh/Projects/pdex
+configfile: pyproject.toml
+plugins: benchmark-5.1.0
+collected 3 items
+
+benches/basic.py ...                                                                                                                                                                                                 [100%]
+
+
+--------------------------------------------------------------------------------------------------- benchmark: 2 tests --------------------------------------------------------------------------------------------------
+Name (time in ms)                                  Min                   Max                  Mean             StdDev                Median                IQR            Outliers      OPS            Rounds  Iterations
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+test_benchmark_fast_implementation             51.4345 (1.0)         54.8240 (1.0)         52.3380 (1.0)       0.8007 (1.0)         52.1402 (1.0)       0.8673 (1.0)           4;1  19.1066 (1.0)          19           1
+test_benchmark_reference_implementation     1,793.7180 (34.87)    1,840.0030 (33.56)    1,814.5615 (34.67)    18.8329 (23.52)    1,811.3458 (34.74)    30.7128 (35.41)         2;0   0.5511 (0.03)          5           1
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Legend:
+  Outliers: 1 Standard Deviation from Mean; 1.5 IQR (InterQuartile Range) from 1st Quartile and 3rd Quartile.
+  OPS: Operations Per Second, computed as 1 / Mean
+==================================================================================================== 3 passed in 17.60s ====================================================================================================
+```
+
+
+### Run comparison script
+
+```bash
+uv run scripts/compare.py
+```
+
+output
+
+```txt  
+============================================================
+Benchmarking with 100 cells, 500 genes, 300 perturbations
+============================================================
+
+1. Reference implementation (batch processing):
+INFO:pdex._single_cell:Precomputing masks for each target gene
+Identifying target masks: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████| 86/86 [00:00<00:00, 26029.02it/s]
+INFO:pdex._single_cell:Precomputing variable indices for each feature
+Identifying variable indices: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████| 500/500 [00:00<00:00, 5203851.12it/s]
+INFO:pdex._single_cell:Creating shared memory memory matrix for parallel computing
+INFO:pdex._single_cell:Creating generator of all combinations: N=43000
+INFO:pdex._single_cell:Creating generator of all batches: N=431
+INFO:pdex._single_cell:Initializing parallel processing pool
+INFO:pdex._single_cell:Processing batches
+Processing batches: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████▋| 430/431 [00:08<00:00, 51.37it/s]
+INFO:pdex._single_cell:Flattening results
+INFO:pdex._single_cell:Closing shared memory pool
+   Time: 8.421 seconds
+
+2. fast with 4 workers (gene batching):
+INFO:pdex._single_cell:vectorized processing: 86 targets, 500 genes
+Processing targets: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 86/86 [00:00<00:00, 940.55it/s]
+   Time: 0.121 seconds
+   Speedup: 69.4x
+
+============================================================
+Correctness Verification:
+============================================================
+✅ fast: Column 'target_mean' values match within 1e-06 tolerance
+✅ fast: Column 'reference_mean' values match within 1e-06 tolerance
+✅ fast: Column 'percent_change' values match within 0.01 tolerance
+✅ fast: Column 'fold_change' values match within 1e-06 tolerance
+✅ fast: Results match reference
+
+============================================================
+Performance Summary:
+============================================================
+Implementation                 Time (s)     Speedup
+----------------------------------------------------
+reference                      8.421        1.0       x
+fast                           0.121        69.4      x
+```
