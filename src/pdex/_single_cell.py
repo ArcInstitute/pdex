@@ -1,13 +1,10 @@
 import logging
 import multiprocessing as mp
-import threading
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from multiprocessing.shared_memory import SharedMemory
 
 import anndata as ad
-import numba
 import os
 import numpy as np
 import pandas as pd
