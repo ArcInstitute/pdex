@@ -477,8 +477,7 @@ def _vectorized_ranksum_test_numba(
     X_ref: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numba-parallelized Wilcoxon rank-sum test across all genes."""
-    n_target, n_genes = X_target.shape
-    n_ref = X_ref.shape[0]
+    _n_target, n_genes = X_target.shape
 
     p_values = np.empty(n_genes)
     u_stats = np.empty(n_genes)
@@ -609,7 +608,7 @@ def parallel_differential_expression_vec(
     targets_to_process = [target for target in unique_targets if target != reference]
     gene_names = adata.var.index.values
 
-    # Process targets sequentially with optimized numba functions
+    # Process targets sequentially with numba functions
     logger.info(f"Processing {len(targets_to_process)} targets")
     all_results = []
     for target in tqdm(targets_to_process, desc="Processing targets"):

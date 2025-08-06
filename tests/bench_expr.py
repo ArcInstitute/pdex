@@ -1,4 +1,4 @@
-import os
+# Run with: `uv run python -m pytest tests/bench_expr.py`
 import sys
 import importlib
 import pytest
@@ -17,7 +17,6 @@ def _reload_pdex():
 
 def test_correctness_comparison():
     """Verify that both experimental modes produce consistent results."""
-    # Constants for this test
     PERT_COL = "perturbation"
     CONTROL_VAR = "control"
     RANDOM_SEED = 42
