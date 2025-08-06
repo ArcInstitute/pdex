@@ -428,57 +428,6 @@ def parallel_differential_expression(
 
 
 @njit
-def _compute_means_numba(X: np.ndarray, mask: np.ndarray, is_log1p: bool, exp_post_agg: bool) -> np.ndarray:
-    """Numba-compiled function to compute means for a masked dataset."""
-    X_masked = X[mask, :]
-    n_samples, n_genes = X_masked.shape
-    means = np.empty(n_genes)
-    
-    for i in range(n_genes):
-        if is_log1p:
-            if exp_post_agg:
-                means[i] = np.expm1(np.mean(X_masked[:, i]))
-            else:
-                means[i] = np.mean(np.expm1(X_masked[:, i]))
-        else:
-            means[i] = np.mean(X_masked[:, i])
-    
-    return means
-
-
-@njit
-def _compute_fold_change_numba(means_target: np.ndarray, means_ref: np.ndarray, clip_value: float) -> np.ndarray:
-    """Numba-compiled function to compute fold changes."""
-    n_genes = means_target.shape[0]
-    fc = np.empty(n_genes)
-    
-    for i in range(n_genes):
-        if means_ref[i] == 0:
-            fc[i] = clip_value if not np.isnan(clip_value) else np.nan
-        elif means_target[i] == 0:
-            fc[i] = 1.0 / clip_value if not np.isnan(clip_value) else 0.0
-        else:
-            fc[i] = means_target[i] / means_ref[i]
-    
-    return fc
-
-
-@njit
-def _compute_percent_change_numba(means_target: np.ndarray, means_ref: np.ndarray) -> np.ndarray:
-    """Numba-compiled function to compute percent changes."""
-    n_genes = means_target.shape[0]
-    pcc = np.empty(n_genes)
-    
-    for i in range(n_genes):
-        if means_ref[i] == 0:
-            pcc[i] = np.nan
-        else:
-            pcc[i] = (means_target[i] - means_ref[i]) / means_ref[i]
-    
-    return pcc
-
-
-@njit
 def _ranksum_single_gene_numba(x_target: np.ndarray, x_ref: np.ndarray) -> tuple[float, float]:
     """Numba-compiled Wilcoxon rank-sum test for a single gene."""
     n_target = x_target.shape[0]
@@ -518,93 +467,21 @@ def _ranksum_single_gene_numba(x_target: np.ndarray, x_ref: np.ndarray) -> tuple
 
 
 @njit(parallel=True)
-def _process_all_targets_numba(
-    X: np.ndarray,
-    X_ref: np.ndarray, 
-    means_ref: np.ndarray,
-    target_masks: np.ndarray,
-    target_indices: np.ndarray,
-    is_log1p: bool,
-    exp_post_agg: bool,
-    clip_value: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Process all targets in parallel using numba."""
-    n_targets = target_indices.shape[0]
-    n_genes = X.shape[1]
-    
-    # Pre-allocate output arrays
-    target_means_out = np.empty((n_targets, n_genes))
-    fold_changes_out = np.empty((n_targets, n_genes))
-    percent_changes_out = np.empty((n_targets, n_genes))
-    p_values_out = np.empty((n_targets, n_genes))
-    statistics_out = np.empty((n_targets, n_genes))
-    
-    # Process each target in parallel
-    for t in prange(n_targets):
-        target_idx = target_indices[t]
-        
-        # Get target mask and data
-        target_mask = target_masks[target_idx]
-        means_target = _compute_means_numba(X, target_mask, is_log1p, exp_post_agg)
-        
-        # Compute fold changes and percent changes
-        fold_changes = _compute_fold_change_numba(means_target, means_ref, clip_value)
-        percent_changes = _compute_percent_change_numba(means_target, means_ref)
-        
-        # Store results
-        target_means_out[t, :] = means_target
-        fold_changes_out[t, :] = fold_changes
-        percent_changes_out[t, :] = percent_changes
-        
-        # Compute statistical tests for each gene
-        X_target = X[target_mask, :]
-        for g in range(n_genes):
-            p_val, stat = _ranksum_single_gene_numba(X_target[:, g], X_ref[:, g])
-            p_values_out[t, g] = p_val
-            statistics_out[t, g] = stat
-    
-    return target_means_out, fold_changes_out, percent_changes_out, p_values_out, statistics_out
-
-
-def _vectorized_ranksum_test(
+def _vectorized_ranksum_test_numba(
     X_target: np.ndarray, X_ref: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized Wilcoxon rank-sum test across all genes simultaneously."""
+    """Numba-parallelized Wilcoxon rank-sum test across all genes."""
     n_target, n_genes = X_target.shape
     n_ref = X_ref.shape[0]
-
-    if n_target == 0 or n_ref == 0:
-        return np.ones(n_genes), np.full(n_genes, np.nan)
-
-    # Combine target and reference for each gene
-    combined_shape = (n_target + n_ref, n_genes)
-    combined = np.empty(combined_shape)
-    combined[:n_target] = X_target
-    combined[n_target:] = X_ref
-
-    # Vectorized ranking across all genes at once
-    ranks = np.empty_like(combined)
-    for i in range(n_genes):
-        ranks[:, i] = np.argsort(np.argsort(combined[:, i])) + 1
-
-    # Sum ranks for target group across all genes
-    rank_sums = np.sum(ranks[:n_target, :], axis=0)
-
-    # Vectorized U-statistic calculation
-    u_stats = rank_sums - n_target * (n_target + 1) / 2
-
-    # Vectorized p-value calculation using normal approximation
-    mu = n_target * n_ref / 2
-    sigma = np.sqrt(n_target * n_ref * (n_target + n_ref + 1) / 12)
-
-    # Handle zero variance case
-    z_scores = np.where(sigma > 0, (u_stats - mu) / sigma, 0)
-
-    # Two-tailed p-values using normal approximation
-    from scipy.stats import norm
-
-    p_values = 2 * (1 - norm.cdf(np.abs(z_scores)))
-
+    
+    p_values = np.empty(n_genes)
+    u_stats = np.empty(n_genes)
+    
+    for i in prange(n_genes):
+        p_val, u_stat = _ranksum_single_gene_numba(X_target[:, i], X_ref[:, i])
+        p_values[i] = p_val
+        u_stats[i] = u_stat
+    
     return p_values, u_stats
 
 
@@ -653,7 +530,7 @@ def _process_single_target_vectorized(
         pcc = np.where(means_ref == 0, np.nan, pcc)
 
     # Statistical tests across all genes simultaneously
-    p_values, statistics = _vectorized_ranksum_test(X_target, X_ref)
+    p_values, statistics = _vectorized_ranksum_test_numba(X_target, X_ref)
 
     # Build results for all genes at once using vectorized operations
     target_results = [
@@ -727,72 +604,23 @@ def parallel_differential_expression_vec(
     targets_to_process = [target for target in unique_targets if target != reference]
     gene_names = adata.var.index.values
 
-    # Use numba for fast parallel processing
-    if num_workers == 1:
-        logger.info(f"Processing {len(targets_to_process)} targets sequentially")
-        # Sequential processing for comparison
-        all_results = []
-        for target in tqdm(targets_to_process, desc="Processing targets"):
-            target_results = _process_single_target_vectorized(
-                target=target,
-                reference=reference,
-                obs_values=obs_values,
-                X=X,
-                X_ref=X_ref,
-                means_ref=means_ref,
-                gene_names=gene_names,
-                is_log1p=is_log1p,
-                exp_post_agg=exp_post_agg,
-                clip_value=clip_value,
-            )
-            all_results.extend(target_results)
-    else:
-        # Use numba parallel processing
-        logger.info(f"Processing {len(targets_to_process)} targets with numba parallel processing")
-        
-        # Prepare data for numba
-        target_names_filtered = np.array(targets_to_process)
-        n_targets = len(target_names_filtered)
-        
-        # Create target masks array and indices
-        target_masks_dict = {}
-        target_indices = []
-        
-        for i, target in enumerate(target_names_filtered):
-            mask = obs_values == target
-            target_masks_dict[i] = mask
-            target_indices.append(i)
-        
-        # Convert to arrays that numba can handle
-        target_masks_array = np.array([target_masks_dict[i] for i in target_indices])
-        target_indices_array = np.array(target_indices)
-        
-        # Handle clip_value for numba
-        clip_val = clip_value if clip_value is not None else np.nan
-        
-        # Process all targets in parallel with numba
-        (target_means_out, fold_changes_out, percent_changes_out, 
-         p_values_out, statistics_out) = _process_all_targets_numba(
-            X, X_ref, means_ref, target_masks_array, target_indices_array,
-            is_log1p, exp_post_agg, clip_val
+    # Process targets sequentially with optimized numba functions
+    logger.info(f"Processing {len(targets_to_process)} targets")
+    all_results = []
+    for target in tqdm(targets_to_process, desc="Processing targets"):
+        target_results = _process_single_target_vectorized(
+            target=target,
+            reference=reference,
+            obs_values=obs_values,
+            X=X,
+            X_ref=X_ref,
+            means_ref=means_ref,
+            gene_names=gene_names,
+            is_log1p=is_log1p,
+            exp_post_agg=exp_post_agg,
+            clip_value=clip_value,
         )
-        
-        # Convert results back to list format
-        all_results = []
-        for t in range(n_targets):
-            target_name = target_names_filtered[t]
-            for g in range(len(gene_names)):
-                all_results.append({
-                    "target": target_name,
-                    "reference": reference,
-                    "feature": gene_names[g],
-                    "target_mean": target_means_out[t, g],
-                    "reference_mean": means_ref[g],
-                    "percent_change": percent_changes_out[t, g],
-                    "fold_change": fold_changes_out[t, g],
-                    "p_value": p_values_out[t, g],
-                    "statistic": statistics_out[t, g],
-                })
+        all_results.extend(target_results)
 
     # Create dataframe
     dataframe = pd.DataFrame(all_results)
