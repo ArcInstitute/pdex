@@ -8,6 +8,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 import anndata as ad
 import numba
+import os
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -22,6 +23,10 @@ from ._utils import guess_is_log
 tools_logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+use_experimental = (os.getenv("USE_EXPERIMENTAL", "0") == "1") or (
+    os.getenv("USE_EXPERIMENTAL", "0") == "true"
+)
 
 KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
@@ -428,62 +433,65 @@ def parallel_differential_expression(
 
 
 @njit
-def _ranksum_single_gene_numba(x_target: np.ndarray, x_ref: np.ndarray) -> tuple[float, float]:
+def _ranksum_single_gene_numba(
+    x_target: np.ndarray,
+    x_ref: np.ndarray,
+) -> tuple[float, float]:
     """Numba-compiled Wilcoxon rank-sum test for a single gene."""
     n_target = x_target.shape[0]
     n_ref = x_ref.shape[0]
-    
+
     if n_target == 0 or n_ref == 0:
         return 1.0, np.nan
-    
+
     # Combine and rank
     combined = np.concatenate((x_target, x_ref))
     ranks = np.empty_like(combined)
-    
-    # Simple ranking (could be optimized further)
+
+    # Simple ranking
     sorted_indices = np.argsort(combined)
     for i in range(len(combined)):
         ranks[sorted_indices[i]] = i + 1
-    
+
     # Sum ranks for target group
     rank_sum = np.sum(ranks[:n_target])
-    
+
     # U-statistic
     u_stat = rank_sum - n_target * (n_target + 1) / 2
-    
+
     # Normal approximation
     mu = n_target * n_ref / 2
     sigma = np.sqrt(n_target * n_ref * (n_target + n_ref + 1) / 12)
-    
+
     if sigma == 0:
         return 1.0, u_stat
-    
+
     z_score = (u_stat - mu) / sigma
     # Approximate p-value using normal CDF (simplified)
-    # For more accuracy, would need to implement erf function
+    # For more accuracy, we would need to implement erf function
     p_value = 2 * (1 - 0.5 * (1 + np.tanh(np.abs(z_score) * np.sqrt(2 / np.pi))))
-    
+
     return p_value, u_stat
 
 
 @njit(parallel=True)
 def _vectorized_ranksum_test_numba(
-    X_target: np.ndarray, X_ref: np.ndarray
+    X_target: np.ndarray,
+    X_ref: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numba-parallelized Wilcoxon rank-sum test across all genes."""
     n_target, n_genes = X_target.shape
     n_ref = X_ref.shape[0]
-    
+
     p_values = np.empty(n_genes)
     u_stats = np.empty(n_genes)
-    
+
     for i in prange(n_genes):
         p_val, u_stat = _ranksum_single_gene_numba(X_target[:, i], X_ref[:, i])
         p_values[i] = p_val
         u_stats[i] = u_stat
-    
-    return p_values, u_stats
 
+    return p_values, u_stats
 
 
 def _process_single_target_vectorized(
@@ -630,3 +638,36 @@ def parallel_differential_expression_vec(
         return pl.DataFrame(dataframe)
 
     return dataframe
+
+
+def parallel_differential_expression_vec_wrapper(
+    adata: ad.AnnData,
+    groups: list[str] | None = None,
+    reference: str = "non-targeting",
+    groupby_key: str = "target_gene",
+    num_workers: int = 1,
+    batch_size: int = 100,
+    metric: str = "wilcoxon",
+    tie_correct: bool = True,
+    is_log1p: bool | None = None,
+    exp_post_agg: bool = True,
+    clip_value: float | int | None = 20.0,
+    as_polars: bool = False,
+    **kwargs,
+) -> pd.DataFrame | pl.DataFrame:
+    return parallel_differential_expression_vec(
+        adata=adata,
+        groups=groups,
+        reference=reference,
+        groupby_key=groupby_key,
+        metric=metric,
+        is_log1p=is_log1p,
+        exp_post_agg=exp_post_agg,
+        clip_value=clip_value,
+        as_polars=as_polars,
+    )
+
+
+if use_experimental:
+    logger.warning("Using experimental features")
+    parallel_differential_expression = parallel_differential_expression_vec_wrapper
