@@ -141,39 +141,39 @@ Benchmarking with 100 cells, 500 genes, 300 perturbations
 
 1. Reference implementation (batch processing):
 INFO:pdex._single_cell:Precomputing masks for each target gene
-Identifying target masks: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████| 86/86 [00:00<00:00, 26029.02it/s]
+Identifying target masks: 100%|██████████████████████████████████████████████████████████████████████| 86/86 [00:00<00:00, 29944.39it/s]
 INFO:pdex._single_cell:Precomputing variable indices for each feature
-Identifying variable indices: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████| 500/500 [00:00<00:00, 5203851.12it/s]
+Identifying variable indices: 100%|██████████████████████████████████████████████████████████████| 500/500 [00:00<00:00, 5637505.38it/s]
 INFO:pdex._single_cell:Creating shared memory memory matrix for parallel computing
 INFO:pdex._single_cell:Creating generator of all combinations: N=43000
 INFO:pdex._single_cell:Creating generator of all batches: N=431
 INFO:pdex._single_cell:Initializing parallel processing pool
 INFO:pdex._single_cell:Processing batches
-Processing batches: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████▋| 430/431 [00:08<00:00, 51.37it/s]
+Processing batches: 100%|████████████████████████████████████████████████████████████████████████████▊| 430/431 [00:07<00:00, 55.84it/s]
 INFO:pdex._single_cell:Flattening results
 INFO:pdex._single_cell:Closing shared memory pool
-   Time: 8.421 seconds
+   Time: 7.749 seconds
 
-2. fast with 4 workers (gene batching):
+2. Vectorized implementation:
 INFO:pdex._single_cell:vectorized processing: 86 targets, 500 genes
-Processing targets: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 86/86 [00:00<00:00, 940.55it/s]
-   Time: 0.121 seconds
-   Speedup: 69.4x
+Processing targets: 100%|██████████████████████████████████████████████████████████████████████████████| 86/86 [00:00<00:00, 978.07it/s]
+   Time: 0.117 seconds
+   Speedup: 66.0x
 
 ============================================================
 Correctness Verification:
 ============================================================
-✅ fast: Column 'target_mean' values match within 1e-06 tolerance
-✅ fast: Column 'reference_mean' values match within 1e-06 tolerance
-✅ fast: Column 'percent_change' values match within 0.01 tolerance
-✅ fast: Column 'fold_change' values match within 1e-06 tolerance
-✅ fast: Results match reference
+✅ vec: Column 'target_mean' values match within 1e-06 tolerance
+✅ vec: Column 'reference_mean' values match within 1e-06 tolerance
+✅ vec: Column 'percent_change' values match within 0.01 tolerance
+✅ vec: Column 'fold_change' values match within 1e-06 tolerance
+✅ vec: Results match reference
 
 ============================================================
 Performance Summary:
 ============================================================
 Implementation                 Time (s)     Speedup
 ----------------------------------------------------
-reference                      8.421        1.0       x
-fast                           0.121        69.4      x
+reference                      7.749        1.0       x
+vec                            0.117        66.0      x
 ```

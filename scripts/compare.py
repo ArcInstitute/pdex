@@ -138,18 +138,18 @@ def benchmark_implementations():
     timings["reference"] = time.time() - start
     print(f"   Time: {timings['reference']:.3f} seconds")
 
-    # Test fast implementation
-    print("\n2. fast with 4 workers (gene batching):")
+    # Test vec implementation
+    print("\n2. Vectorized implementation:")
     start = time.time()
-    results["fast"] = parallel_differential_expression_vec(
+    results["vec"] = parallel_differential_expression_vec(
         adata,
         reference=CONTROL_VAR,
         groupby_key=PERT_COL,
         metric="wilcoxon",
     )
-    timings["fast"] = time.time() - start
-    print(f"   Time: {timings['fast']:.3f} seconds")
-    print(f"   Speedup: {timings['reference']/timings['fast']:.1f}x")
+    timings["vec"] = time.time() - start
+    print(f"   Time: {timings['vec']:.3f} seconds")
+    print(f"   Speedup: {timings['reference']/timings['vec']:.1f}x")
 
     # Verify correctness
     print("\n" + "=" * 60)
