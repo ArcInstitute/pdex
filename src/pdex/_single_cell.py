@@ -1,4 +1,5 @@
 import logging
+import math
 import multiprocessing as mp
 from collections.abc import Iterator
 from functools import partial
@@ -443,30 +444,68 @@ def _ranksum_single_gene_numba(
 
     # Combine and rank
     combined = np.concatenate((x_target, x_ref))
-    ranks = np.empty_like(combined)
+    n_total = len(combined)
 
-    # Simple ranking
+    # Get ranks with tie handling
     sorted_indices = np.argsort(combined)
-    for i in range(len(combined)):
-        ranks[sorted_indices[i]] = i + 1
+    sorted_values = combined[sorted_indices]
+    ranks = np.empty(n_total)
 
-    # Sum ranks for target group
-    rank_sum = np.sum(ranks[:n_target])
+    # Assign ranks with average for ties
+    i = 0
+    tiesum = 0.0  # For tie correction calculation
+    while i < n_total:
+        j = i
+        # Find end of tie group
+        while j < n_total - 1 and sorted_values[j] == sorted_values[j + 1]:
+            j += 1
+        # Calculate average rank for tie group
+        n_ties = j - i + 1
+        avg_rank = (i + j + 2) / 2.0  # +2 because ranks are 1-based
+        for k in range(i, j + 1):
+            ranks[sorted_indices[k]] = avg_rank
+        # Update tie correction sum
+        if n_ties > 1:
+            tiesum += n_ties * (n_ties - 1) * (n_ties + 1)
+        i = j + 1
 
-    # U-statistic
-    u_stat = rank_sum - n_target * (n_target + 1) / 2
+    # Calculate U statistic (use u_target, not the minimum)
+    rank_sum_target = np.sum(ranks[:n_target])
+    u_target = rank_sum_target - n_target * (n_target + 1) / 2
+    u_stat = u_target  # Return the actual U statistic for target group
 
-    # Normal approximation
-    mu = n_target * n_ref / 2
-    sigma = np.sqrt(n_target * n_ref * (n_target + n_ref + 1) / 12)
+    # Calculate z-score with tie correction
+    mu = n_target * n_ref / 2.0
 
-    if sigma == 0:
+    # Variance with tie correction
+    if tiesum == 0:
+        # No ties
+        var = n_target * n_ref * (n_total + 1) / 12.0
+    else:
+        # With tie correction
+        var = (
+            n_target
+            * n_ref
+            * ((n_total + 1) - tiesum / (n_total * (n_total - 1)))
+            / 12.0
+        )
+
+    if var == 0:
         return 1.0, u_stat
 
-    z_score = (u_stat - mu) / sigma
-    # Approximate p-value using normal CDF (simplified)
-    # For more accuracy, we would need to implement erf function
-    p_value = 2 * (1 - 0.5 * (1 + np.tanh(np.abs(z_score) * np.sqrt(2 / np.pi))))
+    sigma = np.sqrt(var)
+
+    # Apply continuity correction
+    z = (u_stat - mu) / sigma
+    if np.abs(u_stat - mu) > 0.5:
+        # Apply continuity correction
+        z = (u_stat - mu - 0.5 * np.sign(u_stat - mu)) / sigma
+
+    # Use erfc for maximum accuracy (equivalent to scipy's implementation)
+    # erfc(z/sqrt(2)) = 2 * P(Z > |z|) for standard normal Z
+    # Two-tailed p-value using complementary error function
+    # This is mathematically equivalent to 2 * norm.sf(abs(z))
+    p_value = math.erfc(np.abs(z) / np.sqrt(2.0))
 
     return p_value, u_stat
 
