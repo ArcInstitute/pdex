@@ -1,13 +1,16 @@
 import logging
+import math
 import multiprocessing as mp
 from collections.abc import Iterator
 from functools import partial
 from multiprocessing.shared_memory import SharedMemory
 
 import anndata as ad
+import os
 import numpy as np
 import pandas as pd
 import polars as pl
+from numba import njit, prange
 from scipy.sparse import csc_matrix, csr_matrix
 from scipy.stats import anderson_ksamp, false_discovery_control, mannwhitneyu, ttest_ind
 from tqdm import tqdm
@@ -18,6 +21,10 @@ from ._utils import guess_is_log
 tools_logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+use_experimental = (os.getenv("USE_EXPERIMENTAL", "0") == "1") or (
+    os.getenv("USE_EXPERIMENTAL", "0") == "true"
+)
 
 KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
@@ -421,3 +428,281 @@ def parallel_differential_expression(
         return pl.DataFrame(dataframe)
 
     return dataframe
+
+
+@njit
+def _ranksum_single_gene_numba(
+    x_target: np.ndarray,
+    x_ref: np.ndarray,
+) -> tuple[float, float]:
+    """Numba-compiled Wilcoxon rank-sum test for a single gene."""
+    n_target = x_target.shape[0]
+    n_ref = x_ref.shape[0]
+
+    if n_target == 0 or n_ref == 0:
+        return 1.0, np.nan
+
+    # Combine and rank
+    combined = np.concatenate((x_target, x_ref))
+    n_total = len(combined)
+
+    # Get ranks with tie handling
+    sorted_indices = np.argsort(combined)
+    sorted_values = combined[sorted_indices]
+    ranks = np.empty(n_total)
+
+    # Assign ranks with average for ties
+    i = 0
+    tiesum = 0.0  # For tie correction calculation
+    while i < n_total:
+        j = i
+        # Find end of tie group
+        while j < n_total - 1 and sorted_values[j] == sorted_values[j + 1]:
+            j += 1
+        # Calculate average rank for tie group
+        n_ties = j - i + 1
+        avg_rank = (i + j + 2) / 2.0  # +2 because ranks are 1-based
+        for k in range(i, j + 1):
+            ranks[sorted_indices[k]] = avg_rank
+        # Update tie correction sum
+        if n_ties > 1:
+            tiesum += n_ties * (n_ties - 1) * (n_ties + 1)
+        i = j + 1
+
+    # Calculate U statistic (use u_target, not the minimum)
+    rank_sum_target = np.sum(ranks[:n_target])
+    u_target = rank_sum_target - n_target * (n_target + 1) / 2
+    u_stat = u_target  # Return the actual U statistic for target group
+
+    # Calculate z-score with tie correction
+    mu = n_target * n_ref / 2.0
+
+    # Variance with tie correction
+    if tiesum == 0:
+        # No ties
+        var = n_target * n_ref * (n_total + 1) / 12.0
+    else:
+        # With tie correction
+        var = (
+            n_target
+            * n_ref
+            * ((n_total + 1) - tiesum / (n_total * (n_total - 1)))
+            / 12.0
+        )
+
+    if var == 0:
+        return 1.0, u_stat
+
+    sigma = np.sqrt(var)
+
+    # Apply continuity correction
+    z = (u_stat - mu) / sigma
+    if np.abs(u_stat - mu) > 0.5:
+        # Apply continuity correction
+        z = (u_stat - mu - 0.5 * np.sign(u_stat - mu)) / sigma
+
+    # Use erfc for maximum accuracy (equivalent to scipy's implementation)
+    # erfc(z/sqrt(2)) = 2 * P(Z > |z|) for standard normal Z
+    # Two-tailed p-value using complementary error function
+    # This is mathematically equivalent to 2 * norm.sf(abs(z))
+    p_value = math.erfc(np.abs(z) / np.sqrt(2.0))
+
+    return p_value, u_stat
+
+
+@njit(parallel=True)
+def _vectorized_ranksum_test_numba(
+    X_target: np.ndarray,
+    X_ref: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Numba-parallelized Wilcoxon rank-sum test across all genes."""
+    _n_target, n_genes = X_target.shape
+
+    p_values = np.empty(n_genes)
+    u_stats = np.empty(n_genes)
+
+    for i in prange(n_genes):
+        p_val, u_stat = _ranksum_single_gene_numba(X_target[:, i], X_ref[:, i])
+        p_values[i] = p_val
+        u_stats[i] = u_stat
+
+    return p_values, u_stats
+
+
+def _process_single_target_vectorized(
+    target: str,
+    reference: str,
+    obs_values: np.ndarray,
+    X: np.ndarray,
+    X_ref: np.ndarray,
+    means_ref: np.ndarray,
+    gene_names: np.ndarray,
+    is_log1p: bool,
+    exp_post_agg: bool,
+    clip_value: float | int | None,
+) -> list[dict]:
+    """Process a single target using vectorized operations."""
+    if target == reference:
+        return []
+
+    # Get target data
+    target_mask = obs_values == target
+    X_target = X[target_mask, :]
+
+    # Vectorized means calculation
+    if is_log1p:
+        if exp_post_agg:
+            means_target = np.expm1(np.mean(X_target, axis=0))
+        else:
+            means_target = np.mean(np.expm1(X_target), axis=0)
+    else:
+        means_target = np.mean(X_target, axis=0)
+
+    # Vectorized fold change and percent change across all genes at once
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fc = means_target / means_ref
+        pcc = (means_target - means_ref) / means_ref
+
+        if clip_value is not None:
+            fc = np.where(means_ref == 0, clip_value, fc)
+            fc = np.where(means_target == 0, 1 / clip_value, fc)
+        else:
+            fc = np.where(means_ref == 0, np.nan, fc)
+            fc = np.where(means_target == 0, 0, fc)
+
+        pcc = np.where(means_ref == 0, np.nan, pcc)
+
+    # Statistical tests across all genes simultaneously
+    p_values, statistics = _vectorized_ranksum_test_numba(X_target, X_ref)
+
+    # Build results for all genes at once using vectorized operations
+    target_results = [
+        {
+            "target": target,
+            "reference": reference,
+            "feature": gene_names[i],
+            "target_mean": means_target[i],
+            "reference_mean": means_ref[i],
+            "percent_change": pcc[i],
+            "fold_change": fc[i],
+            "p_value": p_values[i],
+            "statistic": statistics[i],
+        }
+        for i in range(len(gene_names))
+    ]
+
+    return target_results
+
+
+def parallel_differential_expression_vec(
+    adata: ad.AnnData,
+    groups: list[str] | None = None,
+    reference: str = "non-targeting",
+    groupby_key: str = "target_gene",
+    num_workers: int = 1,
+    metric: str = "wilcoxon",
+    is_log1p: bool | None = None,
+    exp_post_agg: bool = True,
+    clip_value: float | int | None = 20.0,
+    as_polars: bool = False,
+) -> pd.DataFrame | pl.DataFrame:
+    if metric != "wilcoxon":
+        raise ValueError("This implementation currently only supports wilcoxon test")
+
+    # Get unique targets efficiently
+    obs_values = adata.obs[groupby_key].values
+    unique_targets = np.unique(obs_values)
+
+    if groups is not None:
+        mask = np.isin(unique_targets, groups + [reference])
+        unique_targets = unique_targets[mask]
+
+    if not is_log1p:
+        is_log1p = guess_is_log(adata)
+
+    logger.info(
+        f"vectorized processing: {len(unique_targets)} targets, {adata.n_vars} genes"
+    )
+
+    # Convert to dense matrix for fastest access
+    if hasattr(adata.X, "toarray"):
+        X = adata.X.toarray().astype(np.float32)
+    else:
+        X = np.asarray(adata.X, dtype=np.float32)
+
+    # Get reference data once
+    reference_mask = obs_values == reference
+    X_ref = X[reference_mask, :]
+
+    # Compute reference means once for all genes
+    if is_log1p:
+        if exp_post_agg:
+            means_ref = np.expm1(np.mean(X_ref, axis=0))
+        else:
+            means_ref = np.mean(np.expm1(X_ref), axis=0)
+    else:
+        means_ref = np.mean(X_ref, axis=0)
+
+    # Filter out reference target for parallel processing
+    targets_to_process = [target for target in unique_targets if target != reference]
+    gene_names = adata.var.index.values
+
+    # Process targets sequentially with numba functions
+    logger.info(f"Processing {len(targets_to_process)} targets")
+    all_results = []
+    for target in tqdm(targets_to_process, desc="Processing targets"):
+        target_results = _process_single_target_vectorized(
+            target=target,
+            reference=reference,
+            obs_values=obs_values,
+            X=X,
+            X_ref=X_ref,
+            means_ref=means_ref,
+            gene_names=gene_names,
+            is_log1p=is_log1p,
+            exp_post_agg=exp_post_agg,
+            clip_value=clip_value,
+        )
+        all_results.extend(target_results)
+
+    # Create dataframe
+    dataframe = pd.DataFrame(all_results)
+    dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
+
+    if as_polars:
+        return pl.DataFrame(dataframe)
+
+    return dataframe
+
+
+def parallel_differential_expression_vec_wrapper(
+    adata: ad.AnnData,
+    groups: list[str] | None = None,
+    reference: str = "non-targeting",
+    groupby_key: str = "target_gene",
+    num_workers: int = 1,
+    batch_size: int = 100,
+    metric: str = "wilcoxon",
+    tie_correct: bool = True,
+    is_log1p: bool | None = None,
+    exp_post_agg: bool = True,
+    clip_value: float | int | None = 20.0,
+    as_polars: bool = False,
+    **kwargs,
+) -> pd.DataFrame | pl.DataFrame:
+    return parallel_differential_expression_vec(
+        adata=adata,
+        groups=groups,
+        reference=reference,
+        groupby_key=groupby_key,
+        metric=metric,
+        is_log1p=is_log1p,
+        exp_post_agg=exp_post_agg,
+        clip_value=clip_value,
+        as_polars=as_polars,
+    )
+
+
+if use_experimental:
+    logger.warning("Using experimental features")
+    parallel_differential_expression = parallel_differential_expression_vec_wrapper
