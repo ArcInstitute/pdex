@@ -611,7 +611,7 @@ def parallel_differential_expression_vec(
 
     # Get unique targets efficiently
     obs_values = adata.obs[groupby_key].values
-    unique_targets = np.unique(obs_values)
+    unique_targets = np.unique(obs_values)  # type: ignore
 
     if groups is not None:
         mask = np.isin(unique_targets, groups + [reference])
@@ -626,13 +626,13 @@ def parallel_differential_expression_vec(
 
     # Convert to dense matrix for fastest access
     if hasattr(adata.X, "toarray"):
-        X = adata.X.toarray().astype(np.float32)
+        X = adata.X.toarray().astype(np.float32)  # type: ignore
     else:
         X = np.asarray(adata.X, dtype=np.float32)
 
     # Get reference data once
     reference_mask = obs_values == reference
-    X_ref = X[reference_mask, :]
+    X_ref = X[reference_mask, :]  # type: ignore
 
     # Compute reference means once for all genes
     if is_log1p:
@@ -654,11 +654,11 @@ def parallel_differential_expression_vec(
         target_results = _process_single_target_vectorized(
             target=target,
             reference=reference,
-            obs_values=obs_values,
+            obs_values=obs_values,  # type: ignore
             X=X,
             X_ref=X_ref,
             means_ref=means_ref,
-            gene_names=gene_names,
+            gene_names=gene_names,  # type: ignore
             is_log1p=is_log1p,
             exp_post_agg=exp_post_agg,
             clip_value=clip_value,
