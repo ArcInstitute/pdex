@@ -1,6 +1,6 @@
 [project]
 name = "pdex"
-version = "0.1.21"
+version = "0.1.22"
 description = "Parallel differential expression for single-cell perturbation sequencing"
 readme = "README.md"
 authors = [{ name = "noam teyssier", email = "noam.teyssier@arcinstitute.org" }]
@@ -24,8 +24,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.402", 
-    "pytest>=8.3.5", 
+    "pyright>=1.1.402",
+    "pytest>=8.3.5",
     "pytest-benchmark>=5.1.0",
     "ruff>=0.11.8",
 ]
