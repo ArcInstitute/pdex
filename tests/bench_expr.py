@@ -32,7 +32,9 @@ def _create_test_data(n_cells=200, n_genes=100, n_perts=5, seed=42):
     )
     X = np.random.poisson(lam=50, size=(n_cells, n_genes)) + 10
     return ad.AnnData(
-        X=X, obs=obs, var=pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)])
+        X=X,
+        obs=obs,
+        var=pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)]),  # type: ignore
     )
 
 
@@ -102,7 +104,9 @@ def test_detailed_correctness_metrics():
         X[mask] = base if pert == "control" else base * (1 + i * 0.5)
 
     adata = ad.AnnData(
-        X=X, obs=obs, var=pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)])
+        X=X,
+        obs=obs,
+        var=pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)]),  # type: ignore
     )
     ref_result, exp_result = _run_both_modes(adata)
 
@@ -185,7 +189,7 @@ def test_benchmark_parameterized_datasets(
     )
 
     X = np.random.randint(0, 1000, size=(n_cells, n_genes))
-    var = pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)])
+    var = pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)])  # type: ignore
     adata = ad.AnnData(X=X, obs=obs, var=var)
 
     with pytest.MonkeyPatch().context() as m:
