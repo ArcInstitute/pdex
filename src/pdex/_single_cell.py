@@ -574,6 +574,7 @@ def _process_single_target_vectorized(
 
     # Statistical tests across all genes simultaneously
     p_values, statistics = _vectorized_ranksum_test_numba(X_target, X_ref)
+    pairwise_fdr = false_discovery_control(p_values, method="bh")
 
     # Build results for all genes at once using vectorized operations
     target_results = [
@@ -587,6 +588,7 @@ def _process_single_target_vectorized(
             "fold_change": fc[i],
             "p_value": p_values[i],
             "statistic": statistics[i],
+            "pairwise_fdr": pairwise_fdr[i]
         }
         for i in range(len(gene_names))
     ]
