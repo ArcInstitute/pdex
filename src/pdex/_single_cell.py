@@ -588,7 +588,7 @@ def _process_single_target_vectorized(
             "fold_change": fc[i],
             "p_value": p_values[i],
             "statistic": statistics[i],
-            "pairwise_fdr": pairwise_fdr[i]
+            "pairwise_fdr": pairwise_fdr[i],
         }
         for i in range(len(gene_names))
     ]
