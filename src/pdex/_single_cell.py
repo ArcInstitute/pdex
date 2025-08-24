@@ -10,7 +10,7 @@ import os
 import numpy as np
 import pandas as pd
 import polars as pl
-from numba import njit, prange
+from numba import njit, prange, get_num_threads, get_thread_id
 from scipy.sparse import csc_matrix, csr_matrix
 from scipy.stats import anderson_ksamp, false_discovery_control, mannwhitneyu, ttest_ind
 from tqdm import tqdm
@@ -430,103 +430,93 @@ def parallel_differential_expression(
     return dataframe
 
 
-@njit
-def _ranksum_single_gene_numba(
-    x_target: np.ndarray,
-    x_ref: np.ndarray,
-) -> tuple[float, float]:
-    """Numba-compiled Wilcoxon rank-sum test for a single gene."""
-    n_target = x_target.shape[0]
-    n_ref = x_ref.shape[0]
+def prepare_ranksum_buffers(X_target, X_ref):
+    # 1) Precompute per-gene maxima (int64) and global max
+    K_cols = np.maximum(X_target.max(axis=0), X_ref.max(axis=0)).astype(np.int64)
+    K_max = int(K_cols.max())
+    Kp1 = K_max + 1
 
-    if n_target == 0 or n_ref == 0:
-        return 1.0, np.nan
-
-    # Combine and rank
-    combined = np.concatenate((x_target, x_ref))
-    n_total = len(combined)
-
-    # Get ranks with tie handling
-    sorted_indices = np.argsort(combined)
-    sorted_values = combined[sorted_indices]
-    ranks = np.empty(n_total)
-
-    # Assign ranks with average for ties
-    i = 0
-    tiesum = 0.0  # For tie correction calculation
-    while i < n_total:
-        j = i
-        # Find end of tie group
-        while j < n_total - 1 and sorted_values[j] == sorted_values[j + 1]:
-            j += 1
-        # Calculate average rank for tie group
-        n_ties = j - i + 1
-        avg_rank = (i + j + 2) / 2.0  # +2 because ranks are 1-based
-        for k in range(i, j + 1):
-            ranks[sorted_indices[k]] = avg_rank
-        # Update tie correction sum
-        if n_ties > 1:
-            tiesum += n_ties * (n_ties - 1) * (n_ties + 1)
-        i = j + 1
-
-    # Calculate U statistic (use u_target, not the minimum)
-    rank_sum_target = np.sum(ranks[:n_target])
-    u_target = rank_sum_target - n_target * (n_target + 1) / 2
-    u_stat = u_target  # Return the actual U statistic for target group
-
-    # Calculate z-score with tie correction
-    mu = n_target * n_ref / 2.0
-
-    # Variance with tie correction
-    if tiesum == 0:
-        # No ties
-        var = n_target * n_ref * (n_total + 1) / 12.0
-    else:
-        # With tie correction
-        var = (
-            n_target
-            * n_ref
-            * ((n_total + 1) - tiesum / (n_total * (n_total - 1)))
-            / 12.0
-        )
-
-    if var == 0:
-        return 1.0, u_stat
-
-    sigma = np.sqrt(var)
-
-    # Apply continuity correction
-    z = (u_stat - mu) / sigma
-    if np.abs(u_stat - mu) > 0.5:
-        # Apply continuity correction
-        z = (u_stat - mu - 0.5 * np.sign(u_stat - mu)) / sigma
-
-    # Use erfc for maximum accuracy (equivalent to scipy's implementation)
-    # erfc(z/sqrt(2)) = 2 * P(Z > |z|) for standard normal Z
-    # Two-tailed p-value using complementary error function
-    # This is mathematically equivalent to 2 * norm.sf(abs(z))
-    p_value = math.erfc(np.abs(z) / np.sqrt(2.0))
-
-    return p_value, u_stat
+    # 2) Allocate per-thread buffer pool once (reuse across calls)
+    nthreads = get_num_threads()
+    pool_cnt = np.zeros((nthreads, Kp1), dtype=np.int64)
+    pool_cnt_t = np.zeros((nthreads, Kp1), dtype=np.int64)
+    return K_cols, pool_cnt, pool_cnt_t
 
 
-@njit(parallel=True)
-def _vectorized_ranksum_test_numba(
-    X_target: np.ndarray,
-    X_ref: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Numba-parallelized Wilcoxon rank-sum test across all genes."""
-    _n_target, n_genes = X_target.shape
+@njit(parallel=True, fastmath=True)
+def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
+    n_t = X_target.shape[0]
+    n_r = X_ref.shape[0]
+    n_genes = X_target.shape[1]
 
-    p_values = np.empty(n_genes)
-    u_stats = np.empty(n_genes)
+    p_values = np.empty(n_genes, dtype=np.float64)
+    u_stats = np.empty(n_genes, dtype=np.float64)
 
-    for i in prange(n_genes):
-        p_val, u_stat = _ranksum_single_gene_numba(X_target[:, i], X_ref[:, i])
-        p_values[i] = p_val
-        u_stats[i] = u_stat
+    for j in prange(n_genes):
+        tid = get_thread_id()  # Numba ≥ 0.56
+        cnt = pool_cnt[tid]
+        cnt_t = pool_cnt_t[tid]
+
+        Kp1_use = int(K_cols[j] + 1)
+
+        # histograms over just the used slice
+        for i in range(n_t):
+            v = int(X_target[i, j])
+            cnt[v] += 1
+            cnt_t[v] += 1
+        for i in range(n_r):
+            v = int(X_ref[i, j])
+            cnt[v] += 1
+
+        # scan buckets
+        running = 1
+        rank_sum_target = 0.0
+        tie_sum = 0
+        for v in range(Kp1_use):
+            c = cnt[v]
+            if c > 0:
+                avg = running + 0.5 * (c - 1)
+                rank_sum_target += cnt_t[v] * avg
+                tie_sum += c * (c - 1) * (c + 1)
+                running += c
+
+        # U and p
+        u = rank_sum_target - 0.5 * n_t * (n_t + 1)
+        u_stats[j] = u
+
+        N = n_t + n_r
+        if N > 1:
+            tie_adj = tie_sum / (N * (N - 1))
+            sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
+            if sigma2 > 0.0:
+                z = (u - 0.5 * n_t * n_r) / math.sqrt(sigma2)
+                p_values[j] = math.erfc(abs(z) / math.sqrt(2.0))
+            else:
+                p_values[j] = 1.0
+        else:
+            p_values[j] = 1.0
+
+        # clear just the touched slice
+        for v in range(Kp1_use):
+            cnt[v] = 0
+            cnt_t[v] = 0
 
     return p_values, u_stats
+
+
+def _vectorized_ranksum_test_numba(X_target, X_ref, cache=None):
+    # Optional tiny cache for (K_cols, pool) keyed by array identities/shape
+    if cache is None or "prepared" not in cache:
+        K_cols, pool_cnt, pool_cnt_t = prepare_ranksum_buffers(X_target, X_ref)
+        if cache is not None:
+            cache["prepared"] = (K_cols, pool_cnt, pool_cnt_t)
+    else:
+        K_cols, pool_cnt, pool_cnt_t = cache["prepared"]
+
+    # Ensure contiguity for Numba perf
+    Xt = np.ascontiguousarray(X_target)
+    Xr = np.ascontiguousarray(X_ref)
+    return ranksum_kernel_with_pool(Xt, Xr, K_cols, pool_cnt, pool_cnt_t)
 
 
 def _process_single_target_vectorized(
