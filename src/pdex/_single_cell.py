@@ -489,7 +489,7 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
         u_stats[j] = u
 
         N = n_t + n_r
-        
+
         if N <= 1:
             p_values[j] = 1.0
         else:
@@ -533,17 +533,17 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
                 # ASYMPTOTIC (ties present)
                 tie_adj = tie_sum / (N * (N - 1))
                 sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
-                
+
                 if sigma2 > 0.0:
                     sd = math.sqrt(sigma2)
                     mean = 0.5 * n_t * n_r
                     # Continuity correction
                     z_less = (u - mean + 0.5) / sd
                     z_greater = (u - mean - 0.5) / sd
-                    
+
                     p_less = 0.5 * math.erfc(-z_less / root2)
                     p_greater = 0.5 * math.erfc(z_greater / root2)
-                    
+
                     p_two = 2.0 * (p_less if p_less < p_greater else p_greater)
                     if p_two < 0.0:
                         p_two = 0.0
@@ -667,10 +667,6 @@ def parallel_differential_expression_vec(
     if not is_log1p:
         is_log1p = guess_is_log(adata)
 
-    logger.info(
-        f"vectorized processing: {len(unique_targets)} targets, {adata.n_vars} genes"
-    )
-
     # Convert to dense matrix for fastest access
     if hasattr(adata.X, "toarray"):
         X = adata.X.toarray().astype(np.float32)  # type: ignore
@@ -695,9 +691,8 @@ def parallel_differential_expression_vec(
     gene_names = adata.var.index.values
 
     # Process targets sequentially with numba functions
-    logger.info(f"Processing {len(targets_to_process)} targets")
     all_results = []
-    for target in tqdm(targets_to_process, desc="Processing targets"):
+    for target in targets_to_process:
         target_results = _process_single_target_vectorized(
             target=target,
             reference=reference,
