@@ -452,6 +452,8 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
     p_values = np.empty(n_genes, dtype=np.float64)
     u_stats = np.empty(n_genes, dtype=np.float64)
 
+    root2 = math.sqrt(2.0)
+
     for j in prange(n_genes):
         tid = get_thread_id()  # Numba ≥ 0.56
         cnt = pool_cnt[tid]
@@ -480,21 +482,76 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
                 tie_sum += c * (c - 1) * (c + 1)
                 running += c
 
-        # U and p
-        u = rank_sum_target - 0.5 * n_t * (n_t + 1)
+        # U for target and its complement; SciPy returns the smaller
+        U1 = rank_sum_target - 0.5 * n_t * (n_t + 1)
+        U2 = n_t * n_r - U1
+        u = U1 if U1 < U2 else U2
         u_stats[j] = u
 
         N = n_t + n_r
-        if N > 1:
-            tie_adj = tie_sum / (N * (N - 1))
-            sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
-            if sigma2 > 0.0:
-                z = (u - 0.5 * n_t * n_r) / math.sqrt(sigma2)
-                p_values[j] = math.erfc(abs(z) / math.sqrt(2.0))
-            else:
-                p_values[j] = 1.0
-        else:
+        
+        if N <= 1:
             p_values[j] = 1.0
+        else:
+            if tie_sum == 0:
+                # EXACT (no ties)
+                Umax = n_t * n_r
+                dp = np.zeros(Umax + 1, dtype=np.float64)
+                dp[0] = 1.0
+
+                # For each of the n_t target observations, add a ref-shift 0..n_r
+                for _ in range(n_t):
+                    new_dp = np.zeros(Umax + 1, dtype=np.float64)
+                    for u0 in range(Umax + 1):
+                        val = dp[u0]
+                        if val != 0.0:
+                            end = u0 + n_r
+                            if end > Umax:
+                                end = Umax
+                            for u_new in range(u0, end + 1):
+                                new_dp[u_new] += val
+                    dp = new_dp
+
+                total = 0.0
+                for u_val in range(Umax + 1):
+                    total += dp[u_val]
+                # Normalize to probabilities
+                if total > 0.0:
+                    for u_val in range(Umax + 1):
+                        dp[u_val] /= total
+
+                # Two-sided exact p
+                cdf = 0.0
+                for u_val in range(int(u) + 1):
+                    cdf += dp[u_val]
+                sf = 1.0 - cdf + dp[int(u)]
+                p_two = 2.0 * (cdf if cdf < sf else sf)
+                if p_two > 1.0:
+                    p_two = 1.0
+                p_values[j] = p_two
+            else:
+                # ASYMPTOTIC (ties present)
+                tie_adj = tie_sum / (N * (N - 1))
+                sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
+                
+                if sigma2 > 0.0:
+                    sd = math.sqrt(sigma2)
+                    mean = 0.5 * n_t * n_r
+                    # Continuity correction
+                    z_less = (u - mean + 0.5) / sd
+                    z_greater = (u - mean - 0.5) / sd
+                    
+                    p_less = 0.5 * math.erfc(-z_less / root2)
+                    p_greater = 0.5 * math.erfc(z_greater / root2)
+                    
+                    p_two = 2.0 * (p_less if p_less < p_greater else p_greater)
+                    if p_two < 0.0:
+                        p_two = 0.0
+                    elif p_two > 1.0:
+                        p_two = 1.0
+                    p_values[j] = p_two
+                else:
+                    p_values[j] = 1.0
 
         # clear just the touched slice
         for v in range(Kp1_use):
