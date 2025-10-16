@@ -62,25 +62,30 @@ def test_correctness_comparison():
     adata = _create_test_data()
     ref_result, exp_result = _run_both_modes(adata)
 
-    # Check structure matches
-    assert ref_result.shape == exp_result.shape
-    assert list(ref_result.columns) == list(exp_result.columns)
+    ref_columns = ref_result.columns
+    exp_columns = exp_result.columns
+
+    # check that the columns are the same except that exp_result has a "pairwise_fdr" column
+    if "pairwise_fdr" in exp_columns:
+        exp_columns = exp_columns.drop("pairwise_fdr")
+
+    assert set(ref_columns) == set(exp_columns)
 
     # Check means match exactly
     for col in ["reference_mean", "target_mean"]:
-        np.testing.assert_allclose(ref_result[col], exp_result[col], rtol=1e-5)
+        np.testing.assert_allclose(ref_result[col], exp_result[col], rtol=1e-6)
 
     # Check fold changes match (excluding NaNs)
     mask = ~(ref_result["fold_change"].isna() | exp_result["fold_change"].isna())
     np.testing.assert_allclose(
         ref_result.loc[mask, "fold_change"],
         exp_result.loc[mask, "fold_change"],
-        rtol=1e-5,
+        rtol=1e-6,
     )
 
     # P-values should match within 1e-6 absolute tolerance
     np.testing.assert_allclose(
-        ref_result["p_value"], exp_result["p_value"], rtol=1e-2, atol=1e-6
+        ref_result["p_value"], exp_result["p_value"], rtol=1e-6, atol=1e-12
     )
 
 
@@ -112,12 +117,12 @@ def test_detailed_correctness_metrics():
 
     # Check fold changes match
     np.testing.assert_allclose(
-        ref_result["fold_change"], exp_result["fold_change"], rtol=1e-5
+        ref_result["fold_change"], exp_result["fold_change"], rtol=1e-6, atol=1e-12
     )
 
     # P-values should match within 1e-6 absolute tolerance
     np.testing.assert_allclose(
-        ref_result["p_value"], exp_result["p_value"], rtol=1e-2, atol=1e-6
+        ref_result["p_value"], exp_result["p_value"], rtol=1e-6, atol=1e-12
     )
 
 
@@ -146,15 +151,22 @@ def test_edge_cases_numerical_stability():
 
     # Fold changes should match
     np.testing.assert_allclose(
-        ref_small["fold_change"], exp_small["fold_change"], rtol=1e-5
+        ref_small["fold_change"], exp_small["fold_change"], rtol=1e-6
     )
 
     # P-values should match within 1e-6 absolute tolerance
     np.testing.assert_allclose(
-        ref_small["p_value"], exp_small["p_value"], rtol=1e-2, atol=1e-6
+        ref_small["p_value"], exp_small["p_value"], rtol=1e-6, atol=1e-12
     )
 
-    assert ref_large.shape == exp_large.shape
+    assert ref_large.shape[0] == exp_large.shape[0]
+
+    # the shape [1] is different because the experimental mode adds a pairwise_fdr column
+    ref_columns = set(ref_large.columns)
+    exp_columns = set(exp_large.columns)
+    if "pairwise_fdr" in exp_columns:
+        exp_columns.remove("pairwise_fdr")
+    assert ref_columns == exp_columns
 
 
 @pytest.mark.parametrize(
@@ -210,3 +222,7 @@ def test_benchmark_parameterized_datasets(
     assert len(result) > 0
     assert "p_value" in result.columns
     assert "fold_change" in result.columns
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
