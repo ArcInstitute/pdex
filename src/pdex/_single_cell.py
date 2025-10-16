@@ -1,16 +1,16 @@
 import logging
 import math
 import multiprocessing as mp
+import os
 from collections.abc import Iterator
 from functools import partial
 from multiprocessing.shared_memory import SharedMemory
 
 import anndata as ad
-import os
 import numpy as np
 import pandas as pd
 import polars as pl
-from numba import njit, prange, get_num_threads, get_thread_id
+from numba import get_num_threads, get_thread_id, njit, prange
 from scipy.sparse import csc_matrix, csr_matrix
 from scipy.stats import anderson_ksamp, false_discovery_control, mannwhitneyu, ttest_ind
 from tqdm import tqdm
@@ -345,6 +345,11 @@ def parallel_differential_expression(
 
     if not is_log1p:
         is_log1p = guess_is_log(adata)
+        if is_log1p:
+            logger.info("Auto-Detected log1p for dataset.")
+        else:
+            logger.info("Auto-Detected non-log1p for dataset.")
+    logger.info("Log1p status: %s", is_log1p)
 
     # Precompute the number of combinations and batches
     n_combinations = len(unique_targets) * len(unique_features)
