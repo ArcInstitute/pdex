@@ -10,7 +10,7 @@ from scipy.sparse import csc_matrix, csr_matrix
 # average UMI count of ($ e^{15} - 1 = 3.26M $ ) which is unlikely at this point)
 UPPER_LIMIT_LOG = 15
 
-EPSILON = 1e-6
+EPSILON = 1e-3
 
 
 def guess_is_log(adata: ad.AnnData, num_cells: int | float = 5e2) -> bool:
