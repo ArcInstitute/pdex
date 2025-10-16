@@ -346,9 +346,10 @@ def parallel_differential_expression(
     if not is_log1p:
         is_log1p = guess_is_log(adata)
         if is_log1p:
-            logger.info("Detected log1p for dataset.")
+            logger.info("Auto-Detected log1p for dataset.")
         else:
-            logger.info("Detected non-log1p for dataset.")
+            logger.info("Auto-Detected non-log1p for dataset.")
+    logger.info("Log1p status: %s", is_log1p)
 
     # Precompute the number of combinations and batches
     n_combinations = len(unique_targets) * len(unique_features)
