@@ -26,6 +26,6 @@ def guess_is_log(adata: ad.AnnData, num_cells: int | float = 5e2) -> bool:
     elif adata.X is None:
         raise ValueError("adata.X is None")
     else:
-        frac, _ = np.modf(adata.X) # type: ignore
+        frac, _ = np.modf(adata.X)  # type: ignore
 
     return bool(np.any(frac > EPSILON))
