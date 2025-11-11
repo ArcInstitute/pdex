@@ -257,6 +257,10 @@ def _fold_change(
     clip_value: float | int | None = 20,
 ) -> float:
     """Calculate the fold change between two means."""
+    # If both means are zero, return 1. Equivalent to adding pseudocounts on both
+    if μ_tgt == 0 and μ_ref == 0:
+        return np.nan if clip_value is None else 1
+        
     # The fold change is infinite so clip to default value
     if μ_ref == 0:
         return np.nan if clip_value is None else clip_value
