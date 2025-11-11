@@ -257,7 +257,7 @@ def _fold_change(
     clip_value: float | int | None = 20,
 ) -> float:
     """Calculate the fold change between two means."""
-    # If both means are zero, return 1. Equivalent to adding pseudocounts on both
+    # Return 1 if both means are zero
     if μ_tgt == 0 and μ_ref == 0:
         return np.nan if clip_value is None else 1
         
@@ -565,6 +565,7 @@ def _process_single_target_vectorized(
         if clip_value is not None:
             fc = np.where(means_ref == 0, clip_value, fc)
             fc = np.where(means_target == 0, 1 / clip_value, fc)
+            fc = np.where((means_ref == 0) & (means_target == 0), 1, fc)
         else:
             fc = np.where(means_ref == 0, np.nan, fc)
             fc = np.where(means_target == 0, 0, fc)
