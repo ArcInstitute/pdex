@@ -260,7 +260,7 @@ def _fold_change(
     # Return 1 if both means are zero
     if μ_tgt == 0 and μ_ref == 0:
         return np.nan if clip_value is None else 1
-        
+
     # The fold change is infinite so clip to default value
     if μ_ref == 0:
         return np.nan if clip_value is None else clip_value
