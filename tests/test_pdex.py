@@ -178,3 +178,18 @@ def test_dex_polars_output():
     )
     assert results.shape[0] == N_GENES * N_PERTS
     assert isinstance(results, pl.DataFrame)
+
+
+def test_zeroed_matrix():
+    adata = build_random_anndata()
+    adata.X = np.zeros_like(adata.X)
+    results = parallel_differential_expression(
+        adata,
+        reference=CONTROL_VAR,
+        groupby_key=PERT_COL,
+        metric="wilcoxon",
+    )
+    assert results.shape[0] == N_GENES * N_PERTS
+    assert isinstance(results, pd.DataFrame)
+    assert np.all(results["p_value"] == 1.0)
+    assert np.all(results["fdr"] == 1.0)
