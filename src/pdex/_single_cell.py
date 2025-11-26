@@ -434,7 +434,14 @@ def parallel_differential_expression(
     dataframe["p_value"] = dataframe["p_value"].fillna(
         1.0
     )  # ensure p-values are not NaN ( set to 1.0 )
-    dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
+
+    try:
+        dataframe["fdr"] = false_discovery_control(
+            dataframe["p_value"].values, method="bh"
+        )
+    except ValueError:
+        logger.error("Failed to compute FDR - copying p-values")
+        dataframe["fdr"] = dataframe["p_value"].copy()
 
     if as_polars:
         return pl.DataFrame(dataframe)
