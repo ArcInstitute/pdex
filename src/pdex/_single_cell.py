@@ -431,6 +431,9 @@ def parallel_differential_expression(
     _conclude_shared_memory(shared_memory)
 
     dataframe = pd.DataFrame(results)
+    dataframe["p_value"] = dataframe["p_value"].fillna(
+        1.0
+    )  # ensure p-values are not NaN ( set to 1.0 )
     dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
 
     if as_polars:
