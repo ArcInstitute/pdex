@@ -5,6 +5,7 @@ import os
 from collections.abc import Iterator
 from functools import partial
 from multiprocessing.shared_memory import SharedMemory
+from typing import Callable
 
 import anndata as ad
 import numpy as np
@@ -462,6 +463,9 @@ def prepare_ranksum_buffers(X_target, X_ref):
     return K_cols, pool_cnt, pool_cnt_t
 
 
+SQRT2 = math.sqrt(2.0)
+
+
 @njit(parallel=True, fastmath=True)
 def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
     n_t = X_target.shape[0]
@@ -471,7 +475,7 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
     p_values = np.empty(n_genes, dtype=np.float64)
     u_stats = np.empty(n_genes, dtype=np.float64)
 
-    for j in prange(n_genes):
+    for j in prange(n_genes):  # type: ignore[not-iterable]
         tid = get_thread_id()  # Numba ≥ 0.56
         cnt = pool_cnt[tid]
         cnt_t = pool_cnt_t[tid]
@@ -501,19 +505,17 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
 
         # U and p
         u = rank_sum_target - 0.5 * n_t * (n_t + 1)
-        u_stats[j] = u
+        u2 = n_t * n_r - u
+        u_min = u if u > u2 else u2
 
-        N = n_t + n_r
-        if N > 1:
-            tie_adj = tie_sum / (N * (N - 1))
-            sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
-            if sigma2 > 0.0:
-                z = (u - 0.5 * n_t * n_r) / math.sqrt(sigma2)
-                p_values[j] = math.erfc(abs(z) / math.sqrt(2.0))
-            else:
-                p_values[j] = 1.0
-        else:
-            p_values[j] = 1.0
+        n = n_t + n_r
+        s = np.sqrt(n_t * n_r / 12 * ((n + 1) - tie_sum / (n * (n - 1))))
+        mean = n_t * n_r / 2.0
+        cc = 0.5 if u_min < mean else -0.5 if u_min > mean else 0.0
+        z_corr = (u_min - mean + cc) / s
+        p_corr = math.erfc(abs(z_corr) / SQRT2)
+        u_stats[j] = u_min
+        p_values[j] = p_corr if s > 0.0 else 1.0
 
         # clear just the touched slice
         for v in range(Kp1_use):
@@ -544,6 +546,8 @@ def _process_single_target_vectorized(
     obs_values: np.ndarray,
     X: np.ndarray,
     X_ref: np.ndarray,
+    X_disc: np.ndarray,
+    X_ref_disc: np.ndarray,
     means_ref: np.ndarray,
     gene_names: np.ndarray,
     is_log1p: bool,
@@ -557,6 +561,7 @@ def _process_single_target_vectorized(
     # Get target data
     target_mask = obs_values == target
     X_target = X[target_mask, :]
+    X_target_disc = X_disc[target_mask, :]
 
     # Vectorized means calculation
     if is_log1p:
@@ -583,7 +588,8 @@ def _process_single_target_vectorized(
         pcc = np.where(means_ref == 0, np.nan, pcc)
 
     # Statistical tests across all genes simultaneously
-    p_values, statistics = _vectorized_ranksum_test_numba(X_target, X_ref)
+    p_values, statistics = _vectorized_ranksum_test_numba(X_target_disc, X_ref_disc)
+    pairwise_fdr = false_discovery_control(p_values, method="bh")
 
     # Build results for all genes at once using vectorized operations
     target_results = [
@@ -597,6 +603,7 @@ def _process_single_target_vectorized(
             "fold_change": fc[i],
             "p_value": p_values[i],
             "statistic": statistics[i],
+            "pairwise_fdr": pairwise_fdr[i],
         }
         for i in range(len(gene_names))
     ]
@@ -657,6 +664,68 @@ def parallel_differential_expression_vec(
     targets_to_process = [target for target in unique_targets if target != reference]
     gene_names = adata.var.index.values
 
+    is_discrete = np.issubdtype(X.dtype, np.integer) and np.issubdtype(
+        X_ref.dtype, np.integer
+    )
+    if is_discrete:
+        logger.info("Data appears discrete - using direct integer representation")
+        X_disc = X.astype(np.int32, copy=False)
+        X_ref_disc = X_ref.astype(np.int32, copy=False)
+    else:
+        logger.info("Data appears continuous - discretizing to integer representation")
+        import time
+
+        start_discretization = time.time()
+
+        # Discretize data to the smallest integer range while preserving order
+        X_f = np.asarray(X, dtype=np.float32, order="C")
+
+        # Handle NaNs/Infs
+        if not np.isfinite(X_f).all():
+            X_f = np.nan_to_num(
+                X_f,
+                nan=0.0,
+                posinf=np.finfo(np.float32).max,
+                neginf=np.finfo(np.float32).min,
+            )
+
+        X_min = float(np.min(X_f))
+        X_max = float(np.max(X_f))
+
+        # Shift if needed
+        if X_min < 0.0:
+            X_f = X_f - X_min
+            X_ref = X_ref - X_min
+            X_max = X_max - X_min
+
+        # Degenerate case: all values identical
+        if X_max <= 0.0:
+            X_disc = np.zeros_like(X_f, dtype=np.int32)
+            X_ref_disc = np.zeros_like(X_ref, dtype=np.int32)
+        else:
+            # Scale into the *smallest* integer range: 0..N where N = number of distinct values - 1
+            # If continuous, fallback to full dynamic range of int32
+            unique_vals = np.unique(X_f)
+            if unique_vals.shape[0] < 1_000_000:  # heuristic: treat as discrete
+                mapping = {v: i for i, v in enumerate(np.unique(unique_vals))}
+                # Vectorized mapping with np.searchsorted
+                idxs = np.searchsorted(unique_vals, X_f.ravel()).reshape(X_f.shape)
+                X_disc = idxs.astype(np.int32)
+                idxs_ref = np.searchsorted(unique_vals, X_ref.ravel()).reshape(
+                    X_ref.shape
+                )
+                X_ref_disc = idxs_ref.astype(np.int32)
+            else:
+                # Continuous → scale to full int32 range
+                scale = np.iinfo(np.int32).max / X_max
+                X_disc = np.rint(X_f * scale).astype(np.int32, copy=False)
+                X_ref_disc = np.rint(X_ref * scale).astype(np.int32, copy=False)
+
+        end_discretization = time.time()
+        logger.info(
+            f"Discretization completed in {end_discretization - start_discretization:.2f} seconds"
+        )
+
     # Process targets sequentially with numba functions
     logger.info(f"Processing {len(targets_to_process)} targets")
     all_results = []
@@ -667,6 +736,8 @@ def parallel_differential_expression_vec(
             obs_values=obs_values,  # type: ignore
             X=X,
             X_ref=X_ref,
+            X_disc=X_disc,
+            X_ref_disc=X_ref_disc,
             means_ref=means_ref,
             gene_names=gene_names,  # type: ignore
             is_log1p=is_log1p,
@@ -715,4 +786,6 @@ def parallel_differential_expression_vec_wrapper(
 
 if use_experimental:
     logger.warning("Using experimental features")
-    parallel_differential_expression = parallel_differential_expression_vec_wrapper
+    parallel_differential_expression: Callable = (
+        parallel_differential_expression_vec_wrapper
+    )
