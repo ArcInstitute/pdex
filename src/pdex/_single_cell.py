@@ -497,6 +497,8 @@ def _parallel_differential_expression_chunked(
                     fc = np.where(means_ref == 0, clip_value, fc)
                     fc = np.where(means_target == 0, 1 / clip_value, fc)
                     fc = np.where((means_ref == 0) & (means_target == 0), 1, fc)
+                else:
+                    fc = np.where(means_ref == 0, np.nan, fc)
 
                 pcc = np.where(means_ref == 0, np.nan, pcc)
 
@@ -750,6 +752,7 @@ def parallel_differential_expression(
     as_polars: bool = False,
     low_memory: bool | None = None,
     gene_chunk_size: int = 1000,
+    show_progress: bool = True,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
     """Calculate differential expression between groups of cells.
@@ -798,6 +801,8 @@ def parallel_differential_expression(
     gene_chunk_size : int, optional
         Number of genes per chunk in low-memory mode. Lower values use less
         memory but are slower. Defaults to 1000.
+    show_progress : bool, optional
+        Show the low-memory gene chunk progress bar. Defaults to True.
     **kwargs
         Additional keyword arguments passed to the statistical test function.
 
@@ -880,7 +885,7 @@ def parallel_differential_expression(
             is_log1p=is_log1p,
             exp_post_agg=exp_post_agg,
             clip_value=clip_value,
-            show_progress=True,
+            show_progress=show_progress,
             as_polars=as_polars,
             **kwargs,
         )
@@ -1036,7 +1041,11 @@ def _process_single_target_vectorized(
             fc = np.where((means_ref == 0) & (means_target == 0), 1, fc)
         else:
             fc = np.where(means_ref == 0, np.nan, fc)
-            fc = np.where(means_target == 0, 0, fc)
+            fc = np.where(
+                (means_target == 0) & (means_ref != 0),
+                0,
+                fc,
+            )
 
         pcc = np.where(means_ref == 0, np.nan, pcc)
 
@@ -1170,6 +1179,7 @@ def parallel_differential_expression_vec_wrapper(
     as_polars: bool = False,
     low_memory: bool | None = None,
     gene_chunk_size: int = 1000,
+    show_progress: bool = True,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
     return parallel_differential_expression_vec(
