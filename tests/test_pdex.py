@@ -51,10 +51,7 @@ def build_small_anndata() -> ad.AnnData:
     pert = rng.integers(0, 50, size=(n_cells_per_group, n_genes))
     X = np.vstack([control, pert]).astype(np.int32)
     obs = pd.DataFrame(
-        {
-            PERT_COL: [CONTROL_VAR] * n_cells_per_group
-            + ["pert_a"] * n_cells_per_group
-        },
+        {PERT_COL: [CONTROL_VAR] * n_cells_per_group + ["pert_a"] * n_cells_per_group},
         index=pd.Index([f"cell_{i}" for i in range(X.shape[0])]),
     )
     var = pd.DataFrame(index=pd.Index([f"gene_{i}" for i in range(n_genes)]))

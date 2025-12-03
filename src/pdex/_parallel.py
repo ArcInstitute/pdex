@@ -115,7 +115,9 @@ def process_target_in_chunk(
     if X_target.size == 0:
         return []
 
-    means_target = _compute_means(X_target, is_log1p=is_log1p, exp_post_agg=exp_post_agg)
+    means_target = _compute_means(
+        X_target, is_log1p=is_log1p, exp_post_agg=exp_post_agg
+    )
     fc, pcc = _compute_fold_and_percent_changes(means_target, means_ref, clip_value)
 
     chunk_size = X_chunk.shape[1]
@@ -174,11 +176,7 @@ def process_targets_parallel(
     """Process the provided targets sequentially or via a thread pool."""
     progress_label = f"Targets (workers={num_workers})"
     if num_workers <= 1:
-        iterable = (
-            tqdm(targets, desc=progress_label)
-            if show_progress
-            else targets
-        )
+        iterable = tqdm(targets, desc=progress_label) if show_progress else targets
         results: list[dict] = []
         for target in iterable:
             results.extend(process_fn(target=target, **kwargs))
