@@ -437,8 +437,19 @@ def _parallel_differential_expression_chunked(
         raise ValueError("No target groups to compare after filtering")
 
     num_workers = 1 if num_workers is None else num_workers
-    set_numba_threads(num_threads)
-    use_numba = metric == "wilcoxon" and (num_threads is None or num_threads != 1)
+    requested_threads_display = "auto" if num_threads is None else num_threads
+    logger.info(
+        "Parallelization request: num_workers=%s, num_threads=%s",
+        num_workers,
+        requested_threads_display,
+    )
+    actual_num_threads = set_numba_threads(num_threads)
+    use_numba = metric == "wilcoxon" and actual_num_threads != 1
+    logger.info(
+        "Numba threads configured: %s (enabled=%s)",
+        actual_num_threads,
+        "yes" if use_numba else "no",
+    )
 
     # Auto-detect log1p if needed
     if is_log1p is None:
@@ -468,8 +479,13 @@ def _parallel_differential_expression_chunked(
 
     # Process genes in chunks
     chunk_iter = range(0, n_genes, gene_chunk_size)
+    numba_desc = f"{actual_num_threads}" if use_numba else "off"
     if show_progress:
-        chunk_iter = tqdm(chunk_iter, desc="Processing gene chunks", unit="chunk")
+        chunk_iter = tqdm(
+            chunk_iter,
+            desc=f"Gene chunks (workers={num_workers}, numba={numba_desc})",
+            unit="chunk",
+        )
 
     for chunk_start in chunk_iter:
         chunk_end = min(chunk_start + gene_chunk_size, n_genes)

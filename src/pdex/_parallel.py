@@ -133,9 +133,10 @@ def process_targets_parallel(
     **kwargs,
 ) -> list[dict]:
     """Process the provided targets sequentially or via a thread pool."""
+    progress_label = f"Targets (workers={num_workers})"
     if num_workers <= 1:
         iterable = (
-            tqdm(targets, desc="Processing targets")
+            tqdm(targets, desc=progress_label)
             if show_progress
             else targets
         )
@@ -155,7 +156,7 @@ def process_targets_parallel(
             tqdm(
                 as_completed(futures),
                 total=len(futures),
-                desc="Processing targets",
+                desc=progress_label,
             )
             if show_progress
             else as_completed(futures)
