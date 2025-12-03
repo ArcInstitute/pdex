@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "get_default_parallelization",
     "set_numba_threads",
+    "is_integer_data",
+    "should_use_numba",
     "process_target_in_chunk",
     "process_targets_parallel",
     "vectorized_ranksum_test",
@@ -55,6 +57,37 @@ def set_numba_threads(num_threads: int | None) -> int:
 
     set_num_threads(num_threads)
     return num_threads
+
+
+def is_integer_data(X: np.ndarray, sample_size: int = 10000) -> bool:
+    """Return True when all sampled values of X are integer-like."""
+    flat = np.asarray(X).ravel()
+    if flat.size == 0:
+        return True
+
+    if flat.size > sample_size:
+        rng = np.random.default_rng()
+        indices = rng.choice(flat.size, sample_size, replace=False)
+        sample = flat[indices]
+    else:
+        sample = flat
+
+    return np.allclose(sample, np.rint(sample), rtol=0, atol=1e-9)
+
+
+def should_use_numba(
+    X_chunk: np.ndarray,
+    metric: str,
+    num_threads: int | None,
+) -> bool:
+    """Determine if numba acceleration should be used for this chunk."""
+    if num_threads == 1:
+        return False
+
+    if metric != "wilcoxon":
+        return False
+
+    return is_integer_data(X_chunk)
 
 
 def process_target_in_chunk(

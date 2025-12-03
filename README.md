@@ -57,6 +57,9 @@ parallel execution:
 - `num_threads` controls the numba thread pool used by the Wilcoxon kernel. `None`
   lets numba auto-detect the optimal size, whereas `1` turns numba parallelization
   off. This setting is only used in low-memory mode and only when `metric="wilcoxon"`.
+  When pdex detects non-integer expression values in a gene chunk (for example, after
+  log-normalization), it automatically disables numba for that chunk, logs a warning,
+  and falls back to the SciPy implementation to preserve correct rank ordering.
 
 These strategies can be combined: for example, `num_workers=2, num_threads=8`
 runs two target threads that share an eight-thread numba pool. When the metric

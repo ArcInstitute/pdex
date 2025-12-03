@@ -43,6 +43,24 @@ def build_random_anndata(
     )
 
 
+def build_small_anndata() -> ad.AnnData:
+    rng = np.random.default_rng(0)
+    n_cells_per_group = 48
+    n_genes = 5
+    control = rng.integers(0, 50, size=(n_cells_per_group, n_genes))
+    pert = rng.integers(0, 50, size=(n_cells_per_group, n_genes))
+    X = np.vstack([control, pert]).astype(np.int32)
+    obs = pd.DataFrame(
+        {
+            PERT_COL: [CONTROL_VAR] * n_cells_per_group
+            + ["pert_a"] * n_cells_per_group
+        },
+        index=[f"cell_{i}" for i in range(X.shape[0])],
+    )
+    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+    return ad.AnnData(X=X, obs=obs, var=var, dtype=X.dtype)
+
+
 def test_dex_dense_array():
     adata = build_random_anndata()
     results = parallel_differential_expression(
@@ -193,3 +211,75 @@ def test_zeroed_matrix():
     assert isinstance(results, pd.DataFrame)
     assert np.all(results["p_value"] == 1.0)
     assert np.all(results["fdr"] == 1.0)
+
+
+def _sort_results(df: pd.DataFrame) -> pd.DataFrame:
+    return df.sort_values(["target", "feature"]).reset_index(drop=True)
+
+
+def test_low_memory_integer_data_matches_standard_results():
+    adata = build_small_anndata()
+
+    baseline = _sort_results(
+        parallel_differential_expression(
+            adata,
+            reference=CONTROL_VAR,
+            groupby_key=PERT_COL,
+            num_workers=1,
+            low_memory=False,
+        )
+    )
+
+    chunked = _sort_results(
+        parallel_differential_expression(
+            adata,
+            reference=CONTROL_VAR,
+            groupby_key=PERT_COL,
+            num_workers=1,
+            num_threads=2,
+            low_memory=True,
+            gene_chunk_size=2,
+            show_progress=False,
+        )
+    )
+
+    pd.testing.assert_series_equal(
+        baseline["p_value"],
+        chunked["p_value"],
+        check_exact=False,
+        rtol=0,
+        atol=5e-2,
+    )
+    pd.testing.assert_series_equal(baseline["statistic"], chunked["statistic"])
+
+
+def test_low_memory_float_data_falls_back_to_scipy():
+    adata = build_small_anndata()
+    adata_float = adata.copy()
+    adata_float.X = np.log1p(np.asarray(adata_float.X))  # type: ignore[assignment]
+
+    baseline = _sort_results(
+        parallel_differential_expression(
+            adata_float,
+            reference=CONTROL_VAR,
+            groupby_key=PERT_COL,
+            num_workers=1,
+            low_memory=False,
+        )
+    )
+
+    chunked = _sort_results(
+        parallel_differential_expression(
+            adata_float,
+            reference=CONTROL_VAR,
+            groupby_key=PERT_COL,
+            num_workers=1,
+            num_threads=2,
+            low_memory=True,
+            gene_chunk_size=2,
+            show_progress=False,
+        )
+    )
+
+    pd.testing.assert_series_equal(baseline["p_value"], chunked["p_value"])
+    pd.testing.assert_series_equal(baseline["statistic"], chunked["statistic"])

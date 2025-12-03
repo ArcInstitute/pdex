@@ -18,6 +18,7 @@ from ._parallel import (
     get_default_parallelization,
     process_target_in_chunk,
     process_targets_parallel,
+    should_use_numba,
     set_numba_threads,
     vectorized_ranksum_test,
 )
@@ -372,7 +373,7 @@ def _parallel_differential_expression_chunked(
     groupby_key: str = "target_gene",
     gene_chunk_size: int = 1000,
     num_workers: int = 1,
-    num_threads: int | None = None,
+    num_threads: int | None = 1,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
@@ -444,11 +445,11 @@ def _parallel_differential_expression_chunked(
         requested_threads_display,
     )
     actual_num_threads = set_numba_threads(num_threads)
-    use_numba = metric == "wilcoxon" and actual_num_threads != 1
+    numba_candidate = metric == "wilcoxon" and actual_num_threads != 1
     logger.info(
         "Numba threads configured: %s (enabled=%s)",
         actual_num_threads,
-        "yes" if use_numba else "no",
+        "yes" if numba_candidate else "no",
     )
 
     # Auto-detect log1p if needed
@@ -479,7 +480,8 @@ def _parallel_differential_expression_chunked(
 
     # Process genes in chunks
     chunk_iter = range(0, n_genes, gene_chunk_size)
-    numba_desc = f"{actual_num_threads}" if use_numba else "off"
+    numba_desc = f"{actual_num_threads}" if numba_candidate else "off"
+    numba_warning_logged = False
     if show_progress:
         chunk_iter = tqdm(
             chunk_iter,
@@ -493,6 +495,24 @@ def _parallel_differential_expression_chunked(
 
         # Load chunk from disk/memory
         X_chunk = _load_chunk(adata.X, slice(chunk_start, chunk_end))
+
+        if numba_candidate:
+            threads_for_check = (
+                num_threads if num_threads is not None else actual_num_threads
+            )
+            use_numba_for_chunk = should_use_numba(
+                X_chunk,
+                metric=metric,
+                num_threads=threads_for_check,
+            )
+            if not use_numba_for_chunk and not numba_warning_logged:
+                logger.warning(
+                    "Numba acceleration disabled: data contains non-integer values. "
+                    "Falling back to scipy.stats.mannwhitneyu.",
+                )
+                numba_warning_logged = True
+        else:
+            use_numba_for_chunk = False
 
         # Extract reference data for this chunk
         X_ref = X_chunk[reference_mask, :]
@@ -521,7 +541,7 @@ def _parallel_differential_expression_chunked(
                 is_log1p=is_log1p,
                 exp_post_agg=exp_post_agg,
                 clip_value=clip_value,
-                use_numba=use_numba,
+                use_numba=use_numba_for_chunk,
                 **kwargs,
             )
 
@@ -732,7 +752,7 @@ def parallel_differential_expression(
     groupby_key: str = "target_gene",
     num_workers: int | None = None,
     batch_size: int = 100,
-    num_threads: int | None = None,
+    num_threads: int | None = 1,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
@@ -1106,7 +1126,7 @@ def parallel_differential_expression_vec_wrapper(
     groupby_key: str = "target_gene",
     num_workers: int = 1,
     batch_size: int = 100,
-    num_threads: int | None = None,
+    num_threads: int | None = 1,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,

@@ -182,3 +182,21 @@ def test_vectorized_ranksum_test_calls_kernel(monkeypatch):
     assert (K_cols, pool_cnt, pool_cnt_t) == ("cols", "cnt", "cnt_t")
     assert np.allclose(p_vals, [0.1, 0.2])
     assert np.allclose(stats, [1.0, 2.0])
+
+
+def test_is_integer_data_detects_integer_values():
+    assert parallel.is_integer_data(np.array([0.0, 1.0, 2.0]))
+
+
+def test_is_integer_data_detects_float_values():
+    assert not parallel.is_integer_data(np.array([0.0, 0.5, 1.0]))
+
+
+def test_should_use_numba_respects_requirements():
+    ints = np.array([[0, 1], [2, 3]], dtype=np.float32)
+    floats = np.array([[0.1, 1.0], [2.0, 3.0]], dtype=np.float32)
+
+    assert parallel.should_use_numba(ints, "wilcoxon", 2)
+    assert not parallel.should_use_numba(floats, "wilcoxon", 2)
+    assert not parallel.should_use_numba(ints, "anderson", 2)
+    assert not parallel.should_use_numba(ints, "wilcoxon", 1)
