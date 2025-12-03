@@ -799,6 +799,15 @@ def parallel_differential_expression(
     **kwargs
         Additional keyword arguments passed to the statistical test function.
 
+    Notes
+    -----
+    The ``num_workers`` and ``num_threads`` parameters only apply to the low-memory
+    chunked implementation. When ``low_memory`` is enabled (explicitly or because a
+    backed AnnData object was detected), unspecified values fall back to
+    :func:`pdex._parallel.get_default_parallelization`. Setting ``num_threads=1``
+    disables numba parallelization, while ``num_workers=1`` keeps target processing
+    sequential. Both strategies can be combined and share a single numba thread pool.
+
     Returns
     -------
     pd.DataFrame | pl.DataFrame

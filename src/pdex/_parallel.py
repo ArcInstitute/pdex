@@ -3,11 +3,17 @@
 This module encapsulates the reusable pieces required to parallelize the
 low-memory chunked implementation. It provides:
 
-- Default parallelization heuristics
-- Utilities for configuring the shared numba thread pool
-- Helpers for per-target processing of gene chunks
-- A simple ThreadPoolExecutor wrapper with progress reporting
+- Default parallelization heuristics (`get_default_parallelization`)
+- Utilities for configuring the shared numba thread pool (`set_numba_threads`)
+- Helpers for per-target processing of gene chunks (`process_target_in_chunk`)
+- A ThreadPoolExecutor wrapper with consistent progress reporting
+  (`process_targets_parallel`)
 - A thin wrapper around the numba-accelerated Wilcoxon ranksum kernel
+  (`vectorized_ranksum_test`)
+
+These utilities are deliberately decoupled from AnnData-specific logic so
+they can be re-used by both the chunked implementation and the experimental
+vectorized mode.
 """
 
 from __future__ import annotations
