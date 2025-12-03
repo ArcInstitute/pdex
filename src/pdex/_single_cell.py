@@ -1124,7 +1124,7 @@ def parallel_differential_expression_vec_wrapper(
     groups: list[str] | None = None,
     reference: str = "non-targeting",
     groupby_key: str = "target_gene",
-    num_workers: int = 1,
+    num_workers: int | None = None,
     batch_size: int = 100,
     num_threads: int | None = 1,
     metric: str = "wilcoxon",

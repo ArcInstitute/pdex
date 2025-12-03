@@ -55,9 +55,9 @@ def build_small_anndata() -> ad.AnnData:
             PERT_COL: [CONTROL_VAR] * n_cells_per_group
             + ["pert_a"] * n_cells_per_group
         },
-        index=[f"cell_{i}" for i in range(X.shape[0])],
+        index=pd.Index([f"cell_{i}" for i in range(X.shape[0])]),
     )
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+    var = pd.DataFrame(index=pd.Index([f"gene_{i}" for i in range(n_genes)]))
     return ad.AnnData(X=X, obs=obs, var=var, dtype=X.dtype)
 
 
@@ -213,7 +213,9 @@ def test_zeroed_matrix():
     assert np.all(results["fdr"] == 1.0)
 
 
-def _sort_results(df: pd.DataFrame) -> pd.DataFrame:
+def _sort_results(df: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
+    if isinstance(df, pl.DataFrame):
+        df = df.to_pandas()
     return df.sort_values(["target", "feature"]).reset_index(drop=True)
 
 
