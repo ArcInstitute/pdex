@@ -1168,6 +1168,8 @@ def parallel_differential_expression_vec_wrapper(
     exp_post_agg: bool = True,
     clip_value: float | int | None = 20.0,
     as_polars: bool = False,
+    low_memory: bool | None = None,
+    gene_chunk_size: int = 1000,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
     return parallel_differential_expression_vec(
