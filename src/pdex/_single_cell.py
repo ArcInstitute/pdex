@@ -29,17 +29,67 @@ use_experimental = (os.getenv("USE_EXPERIMENTAL", "0") == "1") or (
 KNOWN_METRICS = ["wilcoxon", "anderson", "t-test"]
 
 
+def _is_backed_array(data) -> bool:
+    """Check if data is a backed/HDF5 array type.
+
+    Args:
+        data: The data object to check.
+
+    Returns:
+        True if data appears to be a backed/HDF5 array.
+    """
+    type_name = type(data).__name__
+    module_name = type(data).__module__
+
+    # Common backed array types from h5py and anndata
+    backed_indicators = [
+        "h5py" in module_name,
+        "Dataset" in type_name,
+        "AnnDataFileManager" in type_name,
+        "SparseDataset" in type_name,
+        # h5py Dataset has 'id' and 'file' attributes
+        hasattr(data, "id") and hasattr(data, "file"),
+    ]
+    return any(backed_indicators)
+
+
 def _build_shared_matrix(
     data: np.ndarray | np.matrix | csr_matrix | csc_matrix,
 ) -> tuple[SharedMemory, tuple[int, int], np.dtype]:
-    """Create a shared memory matrix from a numpy array."""
+    """Create a shared memory matrix from a numpy array.
+
+    Args:
+        data: Expression matrix as numpy array, matrix, or scipy sparse matrix.
+
+    Returns:
+        Tuple of (SharedMemory object, shape, dtype).
+
+    Raises:
+        TypeError: If data is a backed/HDF5 array (from backed AnnData).
+    """
+    # Check for backed arrays first and provide a helpful error message
+    if _is_backed_array(data):
+        raise TypeError(
+            "Cannot create shared memory from a backed AnnData object. "
+            "The expression matrix (adata.X) is lazily loaded from disk (HDF5). "
+            "To fix this, either:\n"
+            "  1. Load the AnnData fully into memory: adata = sc.read_h5ad(path) "
+            "(without backed='r')\n"
+            "  2. Convert to in-memory: adata = adata.to_memory()\n"
+            "  3. Slice the data first: adata = adata[subset, :].copy()"
+        )
+
     if isinstance(data, np.matrix):
         data = np.asarray(data)
     elif isinstance(data, csr_matrix) or isinstance(data, csc_matrix):
         data = data.toarray()
 
-    # data should be a numpy array at this point
-    assert isinstance(data, np.ndarray)
+    # Validate data type after conversion
+    if not isinstance(data, np.ndarray):
+        raise TypeError(
+            f"Unsupported data type: {type(data).__name__}. "
+            "Expected numpy array, numpy matrix, or scipy sparse matrix (csr/csc)."
+        )
 
     shared_matrix = SharedMemory(create=True, size=data.nbytes)
     matrix = np.ndarray(data.shape, dtype=data.dtype, buffer=shared_matrix.buf)
@@ -633,6 +683,18 @@ def parallel_differential_expression_vec(
     logger.info(
         f"vectorized processing: {len(unique_targets)} targets, {adata.n_vars} genes"
     )
+
+    # Check for backed AnnData before attempting to convert
+    if _is_backed_array(adata.X):
+        raise TypeError(
+            "Cannot process a backed AnnData object. "
+            "The expression matrix (adata.X) is lazily loaded from disk (HDF5). "
+            "To fix this, either:\n"
+            "  1. Load the AnnData fully into memory: adata = sc.read_h5ad(path) "
+            "(without backed='r')\n"
+            "  2. Convert to in-memory: adata = adata.to_memory()\n"
+            "  3. Slice the data first: adata = adata[subset, :].copy()"
+        )
 
     # Convert to dense matrix for fastest access
     if hasattr(adata.X, "toarray"):
