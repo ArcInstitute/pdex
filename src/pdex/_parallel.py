@@ -13,16 +13,15 @@ low-memory chunked implementation. It provides:
 from __future__ import annotations
 
 import logging
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 import numpy as np
-from numba import get_num_threads, set_num_threads
+from numba import get_num_threads, get_thread_id, njit, prange, set_num_threads
 from scipy.stats import anderson_ksamp, mannwhitneyu, ttest_ind
 from tqdm import tqdm
-
-from ._single_cell import prepare_ranksum_buffers, ranksum_kernel_with_pool
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +174,76 @@ def vectorized_ranksum_test(
     Xt = np.ascontiguousarray(X_target)
     Xr = np.ascontiguousarray(X_ref)
     return ranksum_kernel_with_pool(Xt, Xr, K_cols, pool_cnt, pool_cnt_t)
+
+
+def prepare_ranksum_buffers(X_target: np.ndarray, X_ref: np.ndarray):
+    """Allocate per-thread buffers used by the numba ranksum kernel."""
+    K_cols = np.maximum(X_target.max(axis=0), X_ref.max(axis=0)).astype(np.int64)
+    K_max = int(K_cols.max())
+    Kp1 = K_max + 1
+
+    nthreads = get_num_threads()
+    pool_cnt = np.zeros((nthreads, Kp1), dtype=np.int64)
+    pool_cnt_t = np.zeros((nthreads, Kp1), dtype=np.int64)
+    return K_cols, pool_cnt, pool_cnt_t
+
+
+@njit(parallel=True, fastmath=True)
+def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
+    """Vectorized Wilcoxon ranksum test implemented in numba."""
+    n_t = X_target.shape[0]
+    n_r = X_ref.shape[0]
+    n_genes = X_target.shape[1]
+
+    p_values = np.empty(n_genes, dtype=np.float64)
+    u_stats = np.empty(n_genes, dtype=np.float64)
+
+    for j in prange(n_genes):
+        tid = get_thread_id()
+        cnt = pool_cnt[tid]
+        cnt_t = pool_cnt_t[tid]
+
+        Kp1_use = int(K_cols[j] + 1)
+
+        for i in range(n_t):
+            v = int(X_target[i, j])
+            cnt[v] += 1
+            cnt_t[v] += 1
+        for i in range(n_r):
+            v = int(X_ref[i, j])
+            cnt[v] += 1
+
+        running = 1
+        rank_sum_target = 0.0
+        tie_sum = 0
+        for v in range(Kp1_use):
+            c = cnt[v]
+            if c > 0:
+                avg = running + 0.5 * (c - 1)
+                rank_sum_target += cnt_t[v] * avg
+                tie_sum += c * (c - 1) * (c + 1)
+                running += c
+
+        u = rank_sum_target - 0.5 * n_t * (n_t + 1)
+        u_stats[j] = u
+
+        N = n_t + n_r
+        if N > 1:
+            tie_adj = tie_sum / (N * (N - 1))
+            sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
+            if sigma2 > 0.0:
+                z = (u - 0.5 * n_t * n_r) / math.sqrt(sigma2)
+                p_values[j] = math.erfc(abs(z) / math.sqrt(2.0))
+            else:
+                p_values[j] = 1.0
+        else:
+            p_values[j] = 1.0
+
+        for v in range(Kp1_use):
+            cnt[v] = 0
+            cnt_t[v] = 0
+
+    return p_values, u_stats
 
 
 def _compute_means(
