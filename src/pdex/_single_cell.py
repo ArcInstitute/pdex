@@ -14,7 +14,13 @@ from scipy.sparse import csc_matrix, csr_matrix, issparse
 from scipy.stats import anderson_ksamp, false_discovery_control, mannwhitneyu, ttest_ind
 from tqdm import tqdm
 
-from ._parallel import vectorized_ranksum_test
+from ._parallel import (
+    get_default_parallelization,
+    process_target_in_chunk,
+    process_targets_parallel,
+    set_numba_threads,
+    vectorized_ranksum_test,
+)
 from ._utils import guess_is_log
 
 # Configure logger
@@ -365,6 +371,8 @@ def _parallel_differential_expression_chunked(
     reference: str = "non-targeting",
     groupby_key: str = "target_gene",
     gene_chunk_size: int = 1000,
+    num_workers: int = 1,
+    num_threads: int | None = None,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
@@ -385,6 +393,9 @@ def _parallel_differential_expression_chunked(
         reference: Reference group to compare against.
         groupby_key: Key in adata.obs containing group labels.
         gene_chunk_size: Number of genes to process at once.
+        num_workers: Number of target-level worker threads. Set to 1 for sequential processing.
+        num_threads: Number of numba threads for gene-level parallelization. None lets numba
+            auto-detect, while 1 disables numba parallelization.
         metric: Statistical test to use.
         tie_correct: Whether to use tie correction for Wilcoxon test.
         is_log1p: Whether data is log1p transformed. Auto-detected if None.
@@ -424,6 +435,10 @@ def _parallel_differential_expression_chunked(
 
     if len(unique_targets) == 0:
         raise ValueError("No target groups to compare after filtering")
+
+    num_workers = 1 if num_workers is None else num_workers
+    set_numba_threads(num_threads)
+    use_numba = metric == "wilcoxon" and (num_threads is None or num_threads != 1)
 
     # Auto-detect log1p if needed
     if is_log1p is None:
@@ -474,75 +489,33 @@ def _parallel_differential_expression_chunked(
         else:
             means_ref = X_ref.mean(axis=0)
 
-        # Process each target
-        for target in unique_targets:
+        def _process_target(target: str, **_: Any) -> list[dict]:
             target_mask = target_masks[target]
-            X_target = X_chunk[target_mask, :]
+            return process_target_in_chunk(
+                target=target,
+                reference=reference,
+                X_chunk=X_chunk,
+                X_ref=X_ref,
+                target_mask=target_mask,
+                means_ref=means_ref,
+                gene_names=gene_names,
+                chunk_start=chunk_start,
+                metric=metric,
+                tie_correct=tie_correct,
+                is_log1p=is_log1p,
+                exp_post_agg=exp_post_agg,
+                clip_value=clip_value,
+                use_numba=use_numba,
+                **kwargs,
+            )
 
-            # Compute target means
-            if is_log1p and exp_post_agg:
-                means_target = np.expm1(X_target.mean(axis=0))
-            elif is_log1p:
-                means_target = np.expm1(X_target).mean(axis=0)
-            else:
-                means_target = X_target.mean(axis=0)
-
-            # Compute fold changes vectorized
-            with np.errstate(divide="ignore", invalid="ignore"):
-                fc = means_target / means_ref
-                pcc = (means_target - means_ref) / means_ref
-
-                if clip_value is not None:
-                    fc = np.where(means_ref == 0, clip_value, fc)
-                    fc = np.where(means_target == 0, 1 / clip_value, fc)
-                    fc = np.where((means_ref == 0) & (means_target == 0), 1, fc)
-                else:
-                    fc = np.where(means_ref == 0, np.nan, fc)
-
-                pcc = np.where(means_ref == 0, np.nan, pcc)
-
-            # Statistical tests for each gene in chunk
-            for j in range(chunk_size):
-                gene_idx = chunk_start + j
-                x_tgt = X_target[:, j]
-                x_ref = X_ref[:, j]
-
-                try:
-                    match metric:
-                        case "wilcoxon":
-                            res = mannwhitneyu(
-                                x_tgt,
-                                x_ref,
-                                alternative="two-sided",
-                                use_continuity=tie_correct,
-                                **kwargs,
-                            )
-                            pval, stat = res.pvalue, res.statistic
-                        case "anderson":
-                            res = anderson_ksamp([x_tgt, x_ref], **kwargs)
-                            pval, stat = res.pvalue, res.statistic  # type: ignore
-                        case "t-test":
-                            res = ttest_ind(x_tgt, x_ref, **kwargs)
-                            pval, stat = res.pvalue, res.statistic  # type: ignore
-                        case _:
-                            raise ValueError(f"Unknown metric: {metric}")
-                except ValueError:
-                    # Handle edge cases (all same values, etc.)
-                    pval, stat = 1.0, np.nan
-
-                all_results.append(
-                    {
-                        "target": target,
-                        "reference": reference,
-                        "feature": gene_names[gene_idx],
-                        "target_mean": float(means_target[j]),
-                        "reference_mean": float(means_ref[j]),
-                        "percent_change": float(pcc[j]),
-                        "fold_change": float(fc[j]),
-                        "p_value": float(pval),
-                        "statistic": float(stat),
-                    }
-                )
+        chunk_results = process_targets_parallel(
+            targets=unique_targets,
+            process_fn=_process_target,
+            num_workers=num_workers,
+            show_progress=False,
+        )
+        all_results.extend(chunk_results)
 
         # Explicit cleanup to help garbage collector
         del X_chunk, X_ref
@@ -741,8 +714,9 @@ def parallel_differential_expression(
     groups: list[str] | None = None,
     reference: str = "non-targeting",
     groupby_key: str = "target_gene",
-    num_workers: int = 1,
+    num_workers: int | None = None,
     batch_size: int = 100,
+    num_threads: int | None = None,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
@@ -772,11 +746,15 @@ def parallel_differential_expression(
         Reference group to compare against. Defaults to "non-targeting".
     groupby_key : str, optional
         Key in `adata.obs` to group by. Defaults to "target_gene".
-    num_workers : int, optional
-        Number of workers for parallel processing (standard mode only).
-        Defaults to 1.
+    num_workers : int | None, optional
+        Number of workers for parallel processing. In standard mode, defaults to 1 when
+        unspecified. In low-memory mode, ``None`` triggers auto-detection via
+        :func:`pdex._parallel.get_default_parallelization`.
     batch_size : int, optional
         Number of combinations per batch (standard mode only). Defaults to 100.
+    num_threads : int | None, optional
+        Number of numba threads to use for gene-level parallelization in low-memory mode.
+        ``None`` lets numba auto-detect; ``1`` disables numba parallelization.
     metric : str, optional
         The differential expression metric to use. One of "wilcoxon",
         "anderson", or "t-test". Defaults to "wilcoxon".
@@ -873,12 +851,33 @@ def parallel_differential_expression(
         else:
             logger.info("Using low-memory chunked processing (low_memory=True)")
 
+        workers = num_workers
+        threads = num_threads
+        if workers is None or threads is None:
+            default_workers, default_threads = get_default_parallelization()
+            if workers is None:
+                workers = default_workers
+            if threads is None:
+                threads = default_threads
+
+        if workers is None:
+            workers = 1
+
+        requested_numba = threads is None or threads != 1
+        if metric != "wilcoxon" and requested_numba:
+            logger.warning(
+                "Numba parallelization only supports 'wilcoxon' metric. "
+                f"Falling back to thread-only parallelization for '{metric}'."
+            )
+
         return _parallel_differential_expression_chunked(
             adata=adata,
             groups=groups,
             reference=reference,
             groupby_key=groupby_key,
             gene_chunk_size=gene_chunk_size,
+            num_workers=workers,
+            num_threads=threads,
             metric=metric,
             tie_correct=tie_correct,
             is_log1p=is_log1p,
@@ -888,22 +887,23 @@ def parallel_differential_expression(
             as_polars=as_polars,
             **kwargs,
         )
-    else:
-        return _parallel_differential_expression_standard(
-            adata=adata,
-            groups=groups,
-            reference=reference,
-            groupby_key=groupby_key,
-            num_workers=num_workers,
-            batch_size=batch_size,
-            metric=metric,
-            tie_correct=tie_correct,
-            is_log1p=is_log1p,
-            exp_post_agg=exp_post_agg,
-            clip_value=clip_value,
-            as_polars=as_polars,
-            **kwargs,
-        )
+
+    std_workers = num_workers if num_workers is not None else 1
+    return _parallel_differential_expression_standard(
+        adata=adata,
+        groups=groups,
+        reference=reference,
+        groupby_key=groupby_key,
+        num_workers=std_workers,
+        batch_size=batch_size,
+        metric=metric,
+        tie_correct=tie_correct,
+        is_log1p=is_log1p,
+        exp_post_agg=exp_post_agg,
+        clip_value=clip_value,
+        as_polars=as_polars,
+        **kwargs,
+    )
 
 
 # =============================================================================
@@ -1081,6 +1081,7 @@ def parallel_differential_expression_vec_wrapper(
     groupby_key: str = "target_gene",
     num_workers: int = 1,
     batch_size: int = 100,
+    num_threads: int | None = None,
     metric: str = "wilcoxon",
     tie_correct: bool = True,
     is_log1p: bool | None = None,
