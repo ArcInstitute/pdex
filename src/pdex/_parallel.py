@@ -8,8 +8,9 @@ low-memory chunked implementation. It provides:
 - Helpers for per-target processing of gene chunks (`process_target_in_chunk`)
 - A ThreadPoolExecutor wrapper with consistent progress reporting
   (`process_targets_parallel`)
-- A thin wrapper around the numba-accelerated Wilcoxon ranksum kernel
-  (`vectorized_ranksum_test`)
+- Dual numba kernels for Wilcoxon ranksum test:
+  - Histogram-based kernel for integer count data (O(n + k))
+  - Sorting-based kernel for float data (O(n log n))
 
 These utilities are deliberately decoupled from AnnData-specific logic so
 they can be re-used by both the chunked implementation and the experimental
@@ -60,7 +61,15 @@ def set_numba_threads(num_threads: int | None) -> int:
 
 
 def is_integer_data(X: np.ndarray, sample_size: int = 10000) -> bool:
-    """Return True when all sampled values of X are integer-like."""
+    """Return True when all sampled values of X are integer-like.
+
+    Args:
+        X: Input array to check.
+        sample_size: Maximum number of elements to sample for efficiency.
+
+    Returns:
+        True if all sampled values are close to integers.
+    """
     flat = np.asarray(X).ravel()
     if flat.size == 0:
         return True
@@ -80,14 +89,27 @@ def should_use_numba(
     metric: str,
     num_threads: int | None,
 ) -> bool:
-    """Determine if numba acceleration should be used for this chunk."""
+    """Determine if numba acceleration should be used for this chunk.
+
+    With dual-kernel support (histogram for integers, sorting for floats),
+    numba can be used for any numeric data when metric is wilcoxon.
+
+    Args:
+        X_chunk: Data chunk to process.
+        metric: Statistical test metric.
+        num_threads: Requested numba thread count (1 = disabled).
+
+    Returns:
+        True if numba should be used, False otherwise.
+    """
     if num_threads == 1:
         return False
 
     if metric != "wilcoxon":
         return False
 
-    return is_integer_data(X_chunk)
+    # Supports both integer and float data via dual kernels
+    return True
 
 
 def process_target_in_chunk(
@@ -203,19 +225,58 @@ def process_targets_parallel(
     return results
 
 
+# =============================================================================
+# Dual-Kernel Wilcoxon Ranksum Implementation
+# =============================================================================
+
+
 def vectorized_ranksum_test(
     X_target: np.ndarray,
     X_ref: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run the numba-accelerated Wilcoxon ranksum test across genes."""
-    K_cols, pool_cnt, pool_cnt_t = prepare_ranksum_buffers(X_target, X_ref)
+    """Run numba-accelerated Wilcoxon ranksum test across genes.
+
+    Automatically dispatches to the appropriate kernel:
+    - Histogram-based kernel for integer data (O(n + k), faster)
+    - Sorting-based kernel for float data (O(n log n), more general)
+
+    Args:
+        X_target: Target group expression matrix (n_target_cells × n_genes).
+        X_ref: Reference group expression matrix (n_ref_cells × n_genes).
+
+    Returns:
+        Tuple of (p_values, u_statistics) arrays of length n_genes.
+    """
+    # Auto-dispatch based on data type
+    if is_integer_data(X_target) and is_integer_data(X_ref):
+        return _ranksum_integer(X_target, X_ref)
+    else:
+        return _ranksum_float(X_target, X_ref)
+
+
+def _ranksum_integer(
+    X_target: np.ndarray,
+    X_ref: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Histogram-based ranksum for integer count data."""
+    K_cols, pool_cnt, pool_cnt_t = _prepare_histogram_buffers(X_target, X_ref)
     Xt = np.ascontiguousarray(X_target)
     Xr = np.ascontiguousarray(X_ref)
-    return ranksum_kernel_with_pool(Xt, Xr, K_cols, pool_cnt, pool_cnt_t)
+    return _ranksum_kernel_histogram(Xt, Xr, K_cols, pool_cnt, pool_cnt_t)
 
 
-def prepare_ranksum_buffers(X_target: np.ndarray, X_ref: np.ndarray):
-    """Allocate per-thread buffers used by the numba ranksum kernel."""
+def _ranksum_float(
+    X_target: np.ndarray,
+    X_ref: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sorting-based ranksum for float data."""
+    Xt = np.ascontiguousarray(X_target.astype(np.float64))
+    Xr = np.ascontiguousarray(X_ref.astype(np.float64))
+    return _ranksum_kernel_sorting(Xt, Xr)
+
+
+def _prepare_histogram_buffers(X_target: np.ndarray, X_ref: np.ndarray):
+    """Allocate per-thread buffers used by the histogram ranksum kernel."""
     K_cols = np.maximum(X_target.max(axis=0), X_ref.max(axis=0)).astype(np.int64)
     K_max = int(K_cols.max())
     Kp1 = K_max + 1
@@ -227,8 +288,12 @@ def prepare_ranksum_buffers(X_target: np.ndarray, X_ref: np.ndarray):
 
 
 @njit(parallel=True, fastmath=True)
-def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
-    """Vectorized Wilcoxon ranksum test implemented in numba."""
+def _ranksum_kernel_histogram(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
+    """Histogram-based Wilcoxon ranksum for integer count data.
+
+    Uses counting sort approach - O(n + k) where k is max value.
+    Only valid for non-negative integer data.
+    """
     n_t = X_target.shape[0]
     n_r = X_ref.shape[0]
     n_genes = X_target.shape[1]
@@ -243,6 +308,7 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
 
         Kp1_use = int(K_cols[j] + 1)
 
+        # Build histograms
         for i in range(n_t):
             v = int(X_target[i, j])
             cnt[v] += 1
@@ -251,6 +317,7 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
             v = int(X_ref[i, j])
             cnt[v] += 1
 
+        # Compute rank sum with tie correction
         running = 1
         rank_sum_target = 0.0
         tie_sum = 0
@@ -262,9 +329,11 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
                 tie_sum += c * (c - 1) * (c + 1)
                 running += c
 
+        # U statistic
         u = rank_sum_target - 0.5 * n_t * (n_t + 1)
         u_stats[j] = u
 
+        # P-value via normal approximation
         N = n_t + n_r
         if N > 1:
             tie_adj = tie_sum / (N * (N - 1))
@@ -277,11 +346,118 @@ def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
         else:
             p_values[j] = 1.0
 
+        # Reset buffers for next iteration
         for v in range(Kp1_use):
             cnt[v] = 0
             cnt_t[v] = 0
 
     return p_values, u_stats
+
+
+@njit(parallel=True)
+def _ranksum_kernel_sorting(X_target, X_ref):
+    """Sorting-based Wilcoxon ranksum for float data.
+
+    Uses argsort to compute ranks - O(n log n) per gene.
+    Handles ties by averaging ranks.
+    """
+    n_t = X_target.shape[0]
+    n_r = X_ref.shape[0]
+    n_genes = X_target.shape[1]
+    N = n_t + n_r
+
+    p_values = np.empty(n_genes, dtype=np.float64)
+    u_stats = np.empty(n_genes, dtype=np.float64)
+
+    for j in prange(n_genes):
+        # Combine target and reference values
+        combined = np.empty(N, dtype=np.float64)
+        for i in range(n_t):
+            combined[i] = X_target[i, j]
+        for i in range(n_r):
+            combined[n_t + i] = X_ref[i, j]
+
+        # Get sorted indices
+        order = np.argsort(combined)
+
+        # Assign ranks with tie handling (average ranks for ties)
+        ranks = np.empty(N, dtype=np.float64)
+        i = 0
+        while i < N:
+            # Find the end of the tie group
+            tie_start = i
+            tie_val = combined[order[i]]
+            while i < N and combined[order[i]] == tie_val:
+                i += 1
+            tie_end = i
+
+            # Average rank for tie group (1-based ranks)
+            avg_rank = (tie_start + tie_end + 1) / 2.0
+
+            # Assign average rank to all tied elements
+            for k in range(tie_start, tie_end):
+                ranks[order[k]] = avg_rank
+
+        # Sum ranks for target group (first n_t elements)
+        rank_sum_target = 0.0
+        for i in range(n_t):
+            rank_sum_target += ranks[i]
+
+        # U statistic
+        u = rank_sum_target - 0.5 * n_t * (n_t + 1)
+        u_stats[j] = u
+
+        # Compute tie correction factor
+        tie_sum = 0.0
+        i = 0
+        while i < N:
+            tie_start = i
+            tie_val = combined[order[i]]
+            while i < N and combined[order[i]] == tie_val:
+                i += 1
+            tie_count = i - tie_start
+            if tie_count > 1:
+                tie_sum += tie_count * (tie_count - 1) * (tie_count + 1)
+
+        # P-value via normal approximation with tie correction
+        if N > 1:
+            tie_adj = tie_sum / (N * (N - 1))
+            sigma2 = (n_t * n_r) * ((N + 1) - tie_adj) / 12.0
+            if sigma2 > 0.0:
+                z = (u - 0.5 * n_t * n_r) / math.sqrt(sigma2)
+                p_values[j] = math.erfc(abs(z) / math.sqrt(2.0))
+            else:
+                p_values[j] = 1.0
+        else:
+            p_values[j] = 1.0
+
+    return p_values, u_stats
+
+
+# =============================================================================
+# Legacy API (for backwards compatibility)
+# =============================================================================
+
+
+def prepare_ranksum_buffers(X_target: np.ndarray, X_ref: np.ndarray):
+    """Allocate per-thread buffers used by the numba ranksum kernel.
+
+    Deprecated: Use vectorized_ranksum_test() which auto-dispatches.
+    """
+    return _prepare_histogram_buffers(X_target, X_ref)
+
+
+def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
+    """Vectorized Wilcoxon ranksum test implemented in numba.
+
+    Deprecated: Use vectorized_ranksum_test() which auto-dispatches.
+    """
+    return _ranksum_kernel_histogram(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t)
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 
 def _compute_means(
