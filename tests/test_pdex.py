@@ -252,7 +252,7 @@ def test_low_memory_integer_data_matches_standard_results():
     pd.testing.assert_series_equal(baseline["statistic"], chunked["statistic"])
 
 
-def test_low_memory_float_data_falls_back_to_scipy():
+def test_low_memory_float_data_uses_sorting_kernel():
     adata = build_small_anndata()
     adata_float = adata.copy()
     adata_float.X = np.log1p(np.asarray(adata_float.X))  # type: ignore[assignment]

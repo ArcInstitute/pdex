@@ -1124,6 +1124,40 @@ def parallel_differential_expression_vec_wrapper(
     show_progress: bool = True,
     **kwargs,
 ) -> pd.DataFrame | pl.DataFrame:
+    ignored_defaults = {
+        "num_workers": None,
+        "batch_size": 100,
+        "num_threads": None,
+        "tie_correct": True,
+        "low_memory": None,
+        "gene_chunk_size": 1000,
+        "show_progress": True,
+    }
+    ignored_values = {
+        "num_workers": num_workers,
+        "batch_size": batch_size,
+        "num_threads": num_threads,
+        "tie_correct": tie_correct,
+        "low_memory": low_memory,
+        "gene_chunk_size": gene_chunk_size,
+        "show_progress": show_progress,
+    }
+    for param, value in ignored_values.items():
+        default_value = ignored_defaults[param]
+        if value != default_value:
+            logger.warning(
+                "Experimental vectorized backend ignores parameter '%s'; value %r has no effect.",
+                param,
+                value,
+            )
+
+    if kwargs:
+        ignored_keys = ", ".join(sorted(kwargs))
+        logger.warning(
+            "Experimental vectorized backend ignores additional parameters: %s",
+            ignored_keys,
+        )
+
     return parallel_differential_expression_vec(
         adata=adata,
         groups=groups,
