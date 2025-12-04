@@ -275,7 +275,9 @@ def _ranksum_float(
     return _ranksum_kernel_sorting(Xt, Xr)
 
 
-def _prepare_histogram_buffers(X_target: np.ndarray, X_ref: np.ndarray):
+def _prepare_histogram_buffers(
+    X_target: np.ndarray, X_ref: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Allocate per-thread buffers used by the histogram ranksum kernel."""
     K_cols = np.maximum(X_target.max(axis=0), X_ref.max(axis=0)).astype(np.int64)
     K_max = int(K_cols.max())
@@ -288,7 +290,9 @@ def _prepare_histogram_buffers(X_target: np.ndarray, X_ref: np.ndarray):
 
 
 @njit(parallel=True, fastmath=True)
-def _ranksum_kernel_histogram(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
+def _ranksum_kernel_histogram(
+    X_target, X_ref, K_cols, pool_cnt, pool_cnt_t
+) -> tuple[np.ndarray, np.ndarray]:
     """Histogram-based Wilcoxon ranksum for integer count data.
 
     Uses counting sort approach - O(n + k) where k is max value.
@@ -355,7 +359,7 @@ def _ranksum_kernel_histogram(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
 
 
 @njit(parallel=True)
-def _ranksum_kernel_sorting(X_target, X_ref):
+def _ranksum_kernel_sorting(X_target, X_ref) -> tuple[np.ndarray, np.ndarray]:
     """Sorting-based Wilcoxon ranksum for float data.
 
     Uses argsort to compute ranks - O(n log n) per gene.
@@ -439,7 +443,9 @@ def _ranksum_kernel_sorting(X_target, X_ref):
 # =============================================================================
 
 
-def prepare_ranksum_buffers(X_target: np.ndarray, X_ref: np.ndarray):
+def prepare_ranksum_buffers(
+    X_target: np.ndarray, X_ref: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Allocate per-thread buffers used by the numba ranksum kernel.
 
     Deprecated: Use vectorized_ranksum_test() which auto-dispatches.
@@ -447,7 +453,9 @@ def prepare_ranksum_buffers(X_target: np.ndarray, X_ref: np.ndarray):
     return _prepare_histogram_buffers(X_target, X_ref)
 
 
-def ranksum_kernel_with_pool(X_target, X_ref, K_cols, pool_cnt, pool_cnt_t):
+def ranksum_kernel_with_pool(
+    X_target, X_ref, K_cols, pool_cnt, pool_cnt_t
+) -> tuple[np.ndarray, np.ndarray]:
     """Vectorized Wilcoxon ranksum test implemented in numba.
 
     Deprecated: Use vectorized_ranksum_test() which auto-dispatches.
