@@ -154,32 +154,25 @@ def test_process_targets_parallel_threaded():
 
 
 def test_vectorized_ranksum_test_calls_kernel(monkeypatch):
-    X_target = np.array([[1, 2], [3, 4]], dtype=np.float32)
-    X_ref = np.array([[0, 1], [1, 1]], dtype=np.float32)
+    # Use float values (not integers) to test the sorting kernel path
+    X_target = np.array([[1.5, 2.5], [3.5, 4.5]], dtype=np.float32)
+    X_ref = np.array([[0.5, 1.5], [1.5, 1.5]], dtype=np.float32)
     captured: dict[str, np.ndarray | tuple] = {}
 
-    def fake_prepare(x_target: np.ndarray, x_reference: np.ndarray):
-        captured["prepared"] = (x_target, x_reference)
-        return ("cols", "cnt", "cnt_t")
-
-    def fake_kernel(Xt, Xr, K_cols, pool_cnt, pool_cnt_t):
-        captured["kernel_inputs"] = (Xt, Xr, K_cols, pool_cnt, pool_cnt_t)
+    def fake_sorting_kernel(Xt, Xr):
+        captured["kernel_inputs"] = (Xt, Xr)
         return (
             np.array([0.1, 0.2], dtype=np.float64),
             np.array([1.0, 2.0], dtype=np.float64),
         )
 
-    monkeypatch.setattr(parallel, "prepare_ranksum_buffers", fake_prepare)
-    monkeypatch.setattr(parallel, "ranksum_kernel_with_pool", fake_kernel)
+    monkeypatch.setattr(parallel, "_ranksum_kernel_sorting", fake_sorting_kernel)
 
     p_vals, stats = parallel.vectorized_ranksum_test(X_target, X_ref)
 
-    assert captured["prepared"][0] is X_target
-    assert captured["prepared"][1] is X_ref
-    Xt, Xr, K_cols, pool_cnt, pool_cnt_t = captured["kernel_inputs"]
+    Xt, Xr = captured["kernel_inputs"]
     assert Xt.flags["C_CONTIGUOUS"]
     assert Xr.flags["C_CONTIGUOUS"]
-    assert (K_cols, pool_cnt, pool_cnt_t) == ("cols", "cnt", "cnt_t")
     assert np.allclose(p_vals, [0.1, 0.2])
     assert np.allclose(stats, [1.0, 2.0])
 
@@ -196,7 +189,9 @@ def test_should_use_numba_respects_requirements():
     ints = np.array([[0, 1], [2, 3]], dtype=np.float32)
     floats = np.array([[0.1, 1.0], [2.0, 3.0]], dtype=np.float32)
 
+    # With dual-kernel support, numba is used for both int and float data
     assert parallel.should_use_numba(ints, "wilcoxon", 2)
-    assert not parallel.should_use_numba(floats, "wilcoxon", 2)
+    assert parallel.should_use_numba(floats, "wilcoxon", 2)
+    # Still disabled for non-wilcoxon metrics and single-threaded mode
     assert not parallel.should_use_numba(ints, "anderson", 2)
     assert not parallel.should_use_numba(ints, "wilcoxon", 1)

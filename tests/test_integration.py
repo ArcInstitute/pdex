@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import anndata as ad
 import scipy.sparse as sp
+import polars as pl
 
 from pdex import parallel_differential_expression
 
@@ -46,7 +47,7 @@ def _simulate_single_cell_counts(
     obs = pd.DataFrame({"perturbation": rng.choice(groups, size=n_cells)})
 
     # Generate gene metadata
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+    var = pd.DataFrame(index=pd.Index([f"gene_{i}" for i in range(n_genes)]))
 
     # Base expression means for each gene (log-normal distribution)
     gene_means = rng.lognormal(mean=np.log(base_mean), sigma=1.0, size=n_genes)
@@ -156,6 +157,8 @@ def _run_pdex_both_modes(
         low_memory=False,
         **kwargs,
     )
+    if isinstance(res_standard, pl.DataFrame):
+        res_standard = res_standard.to_pandas()
 
     # Run low_memory mode
     res_lowmem = parallel_differential_expression(
@@ -166,6 +169,8 @@ def _run_pdex_both_modes(
         low_memory=True,
         **kwargs,
     )
+    if isinstance(res_lowmem, pl.DataFrame):
+        res_lowmem = res_lowmem.to_pandas()
 
     # Merge results
     # Columns to join on
@@ -211,7 +216,9 @@ def _assert_high_correlation(
 
         # If no valid data points
         if not valid_mask.any():
-            if results[col_std].isna().all() and results[col_low].isna().all():
+            if bool(results[col_std].isna().all()) and bool(
+                results[col_low].isna().all()
+            ):
                 continue
             else:
                 raise AssertionError(f"All valid values are NaN for {col}")
@@ -245,9 +252,9 @@ def _assert_high_correlation(
             # Show sample of mismatches
             print(results.loc[valid_mask, [col_std, col_low]].head())
 
-        assert corr > threshold, (
-            f"Correlation for {col} is {corr:.6f}, expected > {threshold}"
-        )
+        assert (
+            corr > threshold
+        ), f"Correlation for {col} is {corr:.6f}, expected > {threshold}"
 
 
 def test_integration_dense_counts():
@@ -382,6 +389,8 @@ def test_integration_subset_groups():
         num_workers=NUM_WORKERS,
         low_memory=False,
     )
+    if isinstance(res_standard, pl.DataFrame):
+        res_standard = res_standard.to_pandas()
 
     # Run low_memory mode with subset
     res_lowmem = parallel_differential_expression(
@@ -392,6 +401,8 @@ def test_integration_subset_groups():
         num_workers=NUM_WORKERS,
         low_memory=True,
     )
+    if isinstance(res_lowmem, pl.DataFrame):
+        res_lowmem = res_lowmem.to_pandas()
 
     # Merge results
     join_cols = ["target", "reference", "feature"]
@@ -439,6 +450,8 @@ def test_integration_varying_chunk_sizes():
         low_memory=True,
         gene_chunk_size=1000,
     )
+    if isinstance(res_default, pl.DataFrame):
+        res_default = res_default.to_pandas()
 
     # Run with small chunk size to force multiple chunks
     # 50 genes per chunk -> 6 chunks for 300 genes
@@ -450,6 +463,8 @@ def test_integration_varying_chunk_sizes():
         low_memory=True,
         gene_chunk_size=50,
     )
+    if isinstance(res_small_chunks, pl.DataFrame):
+        res_small_chunks = res_small_chunks.to_pandas()
 
     # Merge results
     join_cols = ["target", "reference", "feature"]
@@ -484,6 +499,6 @@ def test_integration_varying_chunk_sizes():
         y = merged.loc[valid_mask, col_small]
 
         # Use allclose for strict equality check since it's the same algorithm
-        assert np.allclose(x, y, equal_nan=True), (
-            f"Mismatch in {col} between chunk sizes"
-        )
+        assert np.allclose(
+            x, y, equal_nan=True
+        ), f"Mismatch in {col} between chunk sizes"
