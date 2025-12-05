@@ -252,9 +252,9 @@ def _assert_high_correlation(
             # Show sample of mismatches
             print(results.loc[valid_mask, [col_std, col_low]].head())
 
-        assert (
-            corr > threshold
-        ), f"Correlation for {col} is {corr:.6f}, expected > {threshold}"
+        assert corr > threshold, (
+            f"Correlation for {col} is {corr:.6f}, expected > {threshold}"
+        )
 
 
 def test_integration_dense_counts():
@@ -499,6 +499,6 @@ def test_integration_varying_chunk_sizes():
         y = merged.loc[valid_mask, col_small]
 
         # Use allclose for strict equality check since it's the same algorithm
-        assert np.allclose(
-            x, y, equal_nan=True
-        ), f"Mismatch in {col} between chunk sizes"
+        assert np.allclose(x, y, equal_nan=True), (
+            f"Mismatch in {col} between chunk sizes"
+        )

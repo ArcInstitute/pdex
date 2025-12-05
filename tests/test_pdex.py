@@ -286,7 +286,7 @@ def test_low_memory_float_data_uses_sorting_kernel():
         chunked["p_value"],
         check_exact=False,
         rtol=0,
-        atol=5e-2,
+        atol=5e-3,
     )
     pd.testing.assert_series_equal(
         baseline["statistic"],
