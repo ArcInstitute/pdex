@@ -1,3 +1,5 @@
+import logging
+
 import anndata as ad
 import pandas as pd
 import polars as pl
@@ -6,6 +8,8 @@ from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 KNOWN_METHODS = ["sum", "mean", "median"]
 
@@ -71,7 +75,7 @@ def pseudobulk_dex(
     if design is None:
         design = "~" + "+".join(groupby)
 
-    print(f"DESIGN: {design}")
+    logger.info(f"DESIGN: {design}")
 
     if groups is None:
         groups = [x for x in adata.obs[test_col].unique() if x != reference]

@@ -24,6 +24,48 @@ It supports the following metrics:
 - Anderson-Darling
 - T-Test
 
+## Backed vs In-Memory AnnData
+
+pdex adapts its execution strategy based on how the AnnData object is stored:
+
+- **In-memory AnnData** (e.g., loaded via `sc.read_h5ad(path)` without `backed="r"`):
+  pdex uses a shared-memory multiprocessing workflow. Each worker process gets
+  access to the full expression matrix through shared memory, which minimizes
+  serialization overhead. Parallelism is configured via the `num_workers`
+  parameter (process count). `num_threads` is ignored in this mode because numba
+  kernels operate on per-target slices entirely in memory.
+- **Backed AnnData** (`adata.X` is an on-disk HDF5 dataset): pdex automatically
+  switches to the low-memory chunked implementation. Gene chunks are streamed
+  from disk, the reference group is computed once per chunk, and targets are
+  processed in parallel via `num_workers` (thread pool). Within each target,
+  Wilcoxon metrics can additionally use numba parallelization controlled by
+  `num_threads`. This mode avoids loading the entire matrix into RAM while still
+  enabling both target-level and gene-level parallelism.
+
+If a backed dataset is supplied without enabling low-memory mode, pdex raises a
+helpful error explaining that chunked processing is required. Conversely, you can
+force the chunked path for large in-memory matrices by passing `low_memory=True`.
+
+## Parallelization
+
+`parallel_differential_expression` exposes two orthogonal knobs for controlling
+parallel execution:
+
+- `num_workers` controls the number of Python threads that process targets within
+  each gene chunk. `None` (default in low-memory mode) enables an auto-detected
+  worker count based on available CPUs, while `1` disables thread-level parallelism.
+- `num_threads` controls the numba thread pool used by the Wilcoxon kernel. `None`
+  lets numba auto-detect the optimal size, whereas `1` turns numba parallelization
+  off. This setting is only used in low-memory mode and only when `metric="wilcoxon"`.
+  When pdex detects non-integer expression values in a gene chunk (for example, after
+  log-normalization), it automatically disables numba for that chunk, logs a warning,
+  and falls back to the SciPy implementation to preserve correct rank ordering.
+
+These strategies can be combined: for example, `num_workers=2, num_threads=8`
+runs two target threads that share an eight-thread numba pool. When the metric
+does not support numba acceleration, pdex automatically logs a warning and
+falls back to thread-only execution.
+
 ## Usage
 
 ```python
