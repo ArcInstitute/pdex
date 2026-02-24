@@ -1,0 +1,25 @@
+[project]
+name = "pdex2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Noam Teyssier", email = "22600644+noamteyssier@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "anndata>=0.12.10",
+    "numba-mwu",
+    "numpy>=2.4.2",
+    "polars>=1.38.1",
+    "pyarrow>=23.0.1",
+    "scipy>=1.17.1",
+    "tqdm>=4.67.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.22,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+numba-mwu = { path = "../numba-mwu" }
