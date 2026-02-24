@@ -107,9 +107,7 @@ def _pdex_ref(
     ntc_matrix = _isolate_matrix(adata, ntc_mask)
     ntc_bulk = bulk_matrix(ntc_matrix)
     ntc_membership = ntc_mask.size
-
-    if isinstance(ntc_matrix, csr_matrix):
-        ntc_sci = sparse_column_index(ntc_matrix)
+    ntc_ref = sparse_column_index(ntc_matrix) if isinstance(ntc_matrix, csr_matrix) else ntc_matrix
 
     results = []
     for group_idx in tqdm(
@@ -123,11 +121,7 @@ def _pdex_ref(
 
         fc = fold_change(group_bulk, ntc_bulk)
         pc = percent_change(group_bulk, ntc_bulk)
-
-        if isinstance(group_matrix, csr_matrix):
-            mwu_result = mwu(group_matrix, ntc_sci)
-        else:
-            mwu_result = mwu(group_matrix, ntc_matrix)
+        mwu_result = mwu(group_matrix, ntc_ref)
 
         mwu_statistic = mwu_result.statistic
         mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
