@@ -16,4 +16,4 @@ def set_numba_threadpool(threads: int = 0):
     else:
         threads = min(threads, available_threads)
 
-    numba.config.NUMBA_NUM_THREADS = threads  # type: ignore
+    numba.set_num_threads(threads)
