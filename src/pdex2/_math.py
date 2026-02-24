@@ -9,13 +9,13 @@ def bulk_matrix(matrix: np.ndarray | csr_matrix, axis=0) -> np.ndarray:
     return np.array(matrix.mean(axis=axis)).flatten()
 
 
-@nb.njit
+@nb.njit(parallel=True)
 def fold_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Calculates the log2-fold change between two arrays."""
     return np.log2(x / y)
 
 
-@nb.njit
+@nb.njit(parallel=True)
 def percent_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Calculates the change between two arrays."""
     return (x - y) / y
