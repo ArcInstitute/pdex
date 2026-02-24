@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from anndata.experimental.backed import Dataset2D
+from numba_mwu import sparse_column_index
 from scipy.sparse import csr_matrix
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
@@ -107,6 +108,9 @@ def _pdex_ref(
     ntc_bulk = bulk_matrix(ntc_matrix)
     ntc_membership = ntc_mask.size
 
+    if isinstance(ntc_matrix, csr_matrix):
+        ntc_sci = sparse_column_index(ntc_matrix)
+
     results = []
     for group_idx in tqdm(
         range(len(unique_groups)),
@@ -119,7 +123,11 @@ def _pdex_ref(
 
         fc = fold_change(group_bulk, ntc_bulk)
         pc = percent_change(group_bulk, ntc_bulk)
-        mwu_result = mwu(group_matrix, ntc_matrix)
+
+        if isinstance(group_matrix, csr_matrix):
+            mwu_result = mwu(group_matrix, ntc_sci)
+        else:
+            mwu_result = mwu(group_matrix, ntc_matrix)
 
         mwu_statistic = mwu_result.statistic
         mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
