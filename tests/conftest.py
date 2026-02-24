@@ -24,16 +24,17 @@ def small_adata(rng):
 
     # Generate expression: each group has a shifted mean so MWU can detect differences
     X = rng.poisson(lam=5, size=(n_cells, n_genes)).astype(np.float64)
+
     # Boost group A and B so they differ from non-targeting
     X[n_cells_per_group : 2 * n_cells_per_group] += 3  # group A
     X[2 * n_cells_per_group :] += 6  # group B
 
     obs = pd.DataFrame(
         {"guide": obs_groups},
-        index=[f"cell_{i}" for i in range(n_cells)],  # type: ignore
+        index=np.array([f"cell_{i}" for i in range(n_cells)]),
     )
     var = pd.DataFrame(
-        index=[f"gene_{i}" for i in range(n_genes)],  # type: ignore
+        index=np.array([f"gene_{i}" for i in range(n_genes)]),
     )
 
     return ad.AnnData(X=X, obs=obs, var=var)
