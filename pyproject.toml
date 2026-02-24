@@ -30,4 +30,4 @@ requires = ["uv_build>=0.9.22,<0.10.0"]
 build-backend = "uv_build"
 
 [tool.uv.sources]
-numba-mwu = { path = "../numba-mwu" }
+numba-mwu = { git = "git+ssh://github.com/noamteyssier/numba-mwu.git" }
