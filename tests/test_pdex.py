@@ -137,10 +137,99 @@ class TestPdexRefSparse:
 
 
 class TestPdexAllMode:
-    def test_returns_empty_dataframe(self, small_adata):
+    """Tests for pdex(..., mode='all') — 1 vs Rest."""
+
+    def test_returns_dataframe(self, small_adata):
         result = pdex(small_adata, groupby="guide", mode="all")
         assert isinstance(result, pl.DataFrame)
-        assert result.shape[0] == 0
+
+    def test_output_columns(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all")
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_output_shape(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all")
+        n_genes = small_adata.n_vars
+        n_groups = len(small_adata.obs["guide"].unique())
+        # Every group gets compared against all others
+        assert result.shape[0] == n_groups * n_genes
+
+    def test_group_names_present(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all")
+        result_groups = set(result["group"].unique().to_list())
+        expected_groups = set(small_adata.obs["guide"].unique())
+        assert result_groups == expected_groups
+
+    def test_membership_counts(self, small_adata):
+        """Each group's membership should match obs, and rest should be total - group."""
+        result = pdex(small_adata, groupby="guide", mode="all")
+        n_total = small_adata.n_obs
+        for group_name in small_adata.obs["guide"].unique():
+            expected_group = (small_adata.obs["guide"] == group_name).sum()
+            expected_rest = n_total - expected_group
+            group_rows = result.filter(pl.col("group") == group_name)
+            assert group_rows["group_membership"].unique().to_list() == [expected_group]
+            assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
+
+    def test_pvalues_in_range(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all")
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()
+
+    def test_fdr_in_range(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all")
+        assert (result["fdr"] >= 0).all()
+        assert (result["fdr"] <= 1).all()
+
+    def test_fold_change_sign(self, small_adata):
+        """Group B was boosted the most, so its fold change vs rest should be positive."""
+        result = pdex(small_adata, groupby="guide", mode="all")
+        group_b_rows = result.filter(pl.col("group") == "B")
+        mean_fc = group_b_rows["fold_change"].mean()
+        assert mean_fc > 0  # type: ignore
+
+    def test_statistics_against_scipy(self, small_adata):
+        """Verify MWU statistics match scipy for group A gene 0 (1 vs rest)."""
+        result = pdex(small_adata, groupby="guide", mode="all")
+
+        X = small_adata.X
+        obs = small_adata.obs
+        group_a_mask = (obs["guide"] == "A").values
+        rest_mask = ~group_a_mask
+
+        group_vals = X[group_a_mask, 0]
+        rest_vals = X[rest_mask, 0]
+
+        scipy_result = stats.mannwhitneyu(
+            group_vals, rest_vals, alternative="two-sided", method="asymptotic"
+        )
+
+        pdex_group_a = result.filter(pl.col("group") == "A")
+        pdex_pval = pdex_group_a["p_value"][0]
+        pdex_stat = pdex_group_a["statistic"][0]
+
+        np.testing.assert_allclose(pdex_stat, scipy_result.statistic, rtol=1e-6)
+        np.testing.assert_allclose(pdex_pval, scipy_result.pvalue, rtol=1e-6)
+
+    def test_sparse_returns_dataframe(self, small_adata_sparse):
+        result = pdex(small_adata_sparse, groupby="guide", mode="all")
+        assert isinstance(result, pl.DataFrame)
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_sparse_dense_agreement(self, small_adata, small_adata_sparse):
+        """Sparse and dense 1vRest results should match."""
+        dense_result = pdex(small_adata, groupby="guide", mode="all")
+        sparse_result = pdex(small_adata_sparse, groupby="guide", mode="all")
+
+        assert dense_result.shape == sparse_result.shape
+
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
 
 
 class TestPdexValidation:
