@@ -56,6 +56,16 @@ def _unique_groups(
     return (groups, codes)
 
 
+def _isolate_matrix(
+    adata: ad.AnnData,
+    mask: np.ndarray,
+) -> np.ndarray | csr_matrix:
+    """Returns the matrix of cells that match the mask."""
+    if adata.X is None:
+        raise ValueError("AnnData object does not have a matrix.")
+    return adata.X[mask]  # type: ignore
+
+
 def pdex(
     adata: ad.AnnData,
     groupby: str,
@@ -94,7 +104,7 @@ def _pdex_ref(
     ntc_index = _identify_reference_index(unique_groups, reference)
     ntc_mask = np.flatnonzero(unique_group_indices == ntc_index)
 
-    ntc_matrix: np.ndarray | csr_matrix = adata.X[ntc_mask]  # type: ignore
+    ntc_matrix = _isolate_matrix(adata, ntc_mask)
     ntc_bulk = ntc_matrix.mean(axis=0)
     ntc_membership = ntc_mask.size
 
@@ -105,17 +115,17 @@ def _pdex_ref(
     ):
         group_name = unique_groups[group_idx]
         group_mask = np.flatnonzero(unique_group_indices == group_idx)
-        group_matrix: np.ndarray | csr_matrix = adata.X[group_mask]  # type: ignore
+        group_matrix = _isolate_matrix(adata, group_mask)
         group_bulk = group_matrix.mean(axis=0)
 
-        if isinstance(group_matrix, csr_matrix):
-            mwu_results = mannwhitneyu_sparse(group_matrix, ntc_matrix)
-        else:
-            mwu_results = mannwhitneyu_columns(group_matrix, ntc_matrix)
         fc = fold_change(np.asarray(group_bulk).ravel(), np.asarray(ntc_bulk).ravel())
         pc = percent_change(
             np.asarray(group_bulk).ravel(), np.asarray(ntc_bulk).ravel()
         )
+        if isinstance(group_matrix, csr_matrix):
+            mwu_results = mannwhitneyu_sparse(group_matrix, ntc_matrix)
+        else:
+            mwu_results = mannwhitneyu_columns(group_matrix, ntc_matrix)
 
         mwu_statistic = mwu_results.statistic
         mwu_pvalue = np.asarray(mwu_results.pvalue).clip(0, 1)
@@ -145,4 +155,52 @@ def _pdex_all(
     groupby: str,
     **kwargs,
 ) -> pl.DataFrame:
-    return pl.DataFrame([])
+    unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
+
+    results = []
+    for group_idx in tqdm(
+        range(len(unique_groups)),
+        desc="Running parallel differential expression (1 v Rest",
+    ):
+        group_name = unique_groups[group_idx]
+
+        group_mask = unique_group_indices[group_idx]
+        rest_mask = np.logical_not(group_mask)
+
+        group_matrix = _isolate_matrix(adata, group_mask)
+        rest_matrix = _isolate_matrix(adata, rest_mask)
+
+        group_bulk = group_matrix.mean(axis=0)
+        rest_bulk = rest_matrix.mean(axis=0)
+
+        fc = fold_change(group_bulk, rest_bulk)
+        pc = percent_change(
+            np.asarray(group_bulk).ravel(), np.asarray(rest_bulk).ravel()
+        )
+        if isinstance(group_matrix, csr_matrix):
+            mwu_results = mannwhitneyu_sparse(group_matrix, rest_matrix)
+        else:
+            mwu_results = mannwhitneyu_columns(group_matrix, rest_matrix)
+
+        mwu_statistic = mwu_results.statistic
+        mwu_pvalue = np.asarray(mwu_results.pvalue).clip(0, 1)
+        mwu_fdr = false_discovery_control(mwu_pvalue)
+
+        results.append(
+            pl.DataFrame(
+                {
+                    "group": group_name,
+                    "group_mean": np.asarray(group_bulk).ravel(),
+                    "ref_mean": np.asarray(rest_bulk).ravel(),
+                    "group_membership": group_mask.size,
+                    "ref_membership": rest_mask.size,
+                    "fold_change": fc,
+                    "percent_change": pc,
+                    "p_value": mwu_pvalue,
+                    "statistic": mwu_statistic,
+                    "fdr": mwu_fdr,
+                }
+            )
+        )
+
+    return pl.concat(results)
