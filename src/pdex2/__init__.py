@@ -107,7 +107,11 @@ def _pdex_ref(
     ntc_matrix = _isolate_matrix(adata, ntc_mask)
     ntc_bulk = bulk_matrix(ntc_matrix)
     ntc_membership = ntc_mask.size
-    ntc_ref = sparse_column_index(ntc_matrix) if isinstance(ntc_matrix, csr_matrix) else ntc_matrix
+    ntc_ref = (
+        sparse_column_index(ntc_matrix)
+        if isinstance(ntc_matrix, csr_matrix)
+        else ntc_matrix
+    )
 
     results = []
     for group_idx in tqdm(
