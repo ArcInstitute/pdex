@@ -1,8 +1,6 @@
 """Integration tests for pdex() and _pdex_ref()."""
 
-import anndata as ad
 import numpy as np
-import pandas as pd
 import polars as pl
 import pytest
 from scipy import stats
