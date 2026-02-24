@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from anndata.experimental.backed import Dataset2D
-from numba_mwu import mannwhitneyu
+from numba_mwu import mannwhitneyu_columns, mannwhitneyu_sparse
 from scipy.sparse import csr_matrix
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
@@ -47,9 +47,13 @@ def _unique_groups(
     """Returns the unique groups in the observation data.
 
     Removes NaN and empty strings."""
-    groups, groups_mask = np.unique(obs[groupby].values, return_inverse=True)  # type: ignore
-    keep_mask = (groups != "") & (~np.isnan(groups))
-    return (groups[keep_mask], groups_mask[keep_mask])
+    labels = pd.Categorical(obs[groupby])
+    labels = labels.remove_categories(
+        [c for c in labels.categories if c == "" or pd.isna(c)]
+    )
+    groups = np.asarray(labels.categories)
+    codes = np.asarray(labels.codes, dtype=np.intp)  # -1 for filtered cells
+    return (groups, codes)
 
 
 def pdex(
@@ -68,8 +72,7 @@ def pdex(
         return _pdex_ref(
             adata,
             groupby=groupby,
-            reference=kwargs.get("reference", DEFAULT_REFERENCE),
-            **kwargs,
+            reference=kwargs.pop("reference", DEFAULT_REFERENCE),
         )
     elif mode == "all":
         return _pdex_all(
@@ -105,20 +108,25 @@ def _pdex_ref(
         group_matrix: np.ndarray | csr_matrix = adata.X[group_mask]  # type: ignore
         group_bulk = group_matrix.mean(axis=0)
 
-        mwu_results = mannwhitneyu(group_matrix, ntc_matrix)
-        fc = fold_change(group_bulk, ntc_bulk)
-        pc = percent_change(group_bulk, ntc_bulk)
+        if isinstance(group_matrix, csr_matrix):
+            mwu_results = mannwhitneyu_sparse(group_matrix, ntc_matrix)
+        else:
+            mwu_results = mannwhitneyu_columns(group_matrix, ntc_matrix)
+        fc = fold_change(np.asarray(group_bulk).ravel(), np.asarray(ntc_bulk).ravel())
+        pc = percent_change(
+            np.asarray(group_bulk).ravel(), np.asarray(ntc_bulk).ravel()
+        )
 
         mwu_statistic = mwu_results.statistic
-        mwu_pvalue = mwu_results.pvalue.clip(0, 1)
+        mwu_pvalue = np.asarray(mwu_results.pvalue).clip(0, 1)
         mwu_fdr = false_discovery_control(mwu_pvalue)
 
         results.append(
             pl.DataFrame(
                 {
                     "group": group_name,
-                    "group_mean": group_bulk,
-                    "ref_mean": ntc_bulk,
+                    "group_mean": np.asarray(group_bulk).ravel(),
+                    "ref_mean": np.asarray(ntc_bulk).ravel(),
                     "group_membership": group_mask.size,
                     "ref_membership": ntc_membership,
                     "fold_change": fc,

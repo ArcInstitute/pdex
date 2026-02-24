@@ -17,6 +17,13 @@ dependencies = [
     "tqdm>=4.67.3",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.15.2",
+    "ty>=0.0.18",
+]
+
 [build-system]
 requires = ["uv_build>=0.9.22,<0.10.0"]
 build-backend = "uv_build"
