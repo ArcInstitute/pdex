@@ -9,6 +9,7 @@ from pdex2 import DEFAULT_REFERENCE, pdex
 
 EXPECTED_COLUMNS = {
     "group",
+    "feature",
     "group_mean",
     "ref_mean",
     "group_membership",
@@ -232,9 +233,6 @@ class TestPdexAllMode:
             )
 
 
-EXPECTED_ON_TARGET_COLUMNS = EXPECTED_COLUMNS | {"gene"}
-
-
 class TestPdexOnTargetMode:
     """Tests for pdex(..., mode='on_target')."""
 
@@ -248,7 +246,7 @@ class TestPdexOnTargetMode:
         result = pdex(
             on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
         )
-        assert set(result.columns) == EXPECTED_ON_TARGET_COLUMNS
+        assert set(result.columns) == EXPECTED_COLUMNS
 
     def test_output_shape(self, on_target_adata):
         result = pdex(
@@ -263,7 +261,7 @@ class TestPdexOnTargetMode:
         )
         gene_map = {"non-targeting": "gene_0", "A": "gene_1", "B": "gene_2"}
         for row in result.iter_rows(named=True):
-            assert row["gene"] == gene_map[row["group"]]
+            assert row["feature"] == gene_map[row["group"]]
 
     def test_membership_counts(self, on_target_adata):
         result = pdex(
@@ -364,7 +362,9 @@ class TestPdexOnTargetValidation:
         adata = on_target_adata.copy()
         adata.obs.loc[adata.obs["guide"] == "A", "target_gene"] = "not_a_real_gene"
         with pytest.warns(UserWarning, match="not_a_real_gene"):
-            result = pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
+            result = pdex(
+                adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            )
         assert "A" not in result["group"].to_list()
         assert result.shape[0] == adata.obs["guide"].nunique() - 1
 

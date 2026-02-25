@@ -203,6 +203,8 @@ def _pdex_ref(
         else ref_matrix
     )
 
+    feature_names = adata.var_names
+
     results = []
     for group_idx in tqdm(
         range(len(unique_groups)),
@@ -225,6 +227,7 @@ def _pdex_ref(
             pl.DataFrame(
                 {
                     "group": group_name,
+                    "feature": feature_names,
                     "group_mean": np.asarray(group_bulk).ravel(),
                     "ref_mean": np.asarray(ref_bulk).ravel(),
                     "group_membership": group_mask.size,
@@ -247,6 +250,8 @@ def _pdex_all(
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
+
+    feature_names = adata.var_names
 
     results = []
     for group_idx in tqdm(
@@ -278,6 +283,7 @@ def _pdex_all(
             pl.DataFrame(
                 {
                     "group": group_name,
+                    "feature": feature_names,
                     "group_mean": np.asarray(group_bulk).ravel(),
                     "ref_mean": np.asarray(rest_bulk).ravel(),
                     "group_membership": group_mask.size,
@@ -352,7 +358,7 @@ def _pdex_on_target(
         rows.append(
             {
                 "group": group_name,
-                "gene": adata.var_names[gene_idx],
+                "feature": adata.var_names[gene_idx],
                 "group_mean": group_mean,
                 "ref_mean": ref_mean,
                 "group_membership": group_mask.size,
