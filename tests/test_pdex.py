@@ -232,6 +232,141 @@ class TestPdexAllMode:
             )
 
 
+EXPECTED_ON_TARGET_COLUMNS = EXPECTED_COLUMNS | {"gene"}
+
+
+class TestPdexOnTargetMode:
+    """Tests for pdex(..., mode='on_target')."""
+
+    def test_returns_dataframe(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        assert isinstance(result, pl.DataFrame)
+
+    def test_output_columns(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        assert set(result.columns) == EXPECTED_ON_TARGET_COLUMNS
+
+    def test_output_shape(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        n_groups = on_target_adata.obs["guide"].nunique()
+        assert result.shape[0] == n_groups
+
+    def test_gene_column_values(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        gene_map = {"non-targeting": "gene_0", "A": "gene_1", "B": "gene_2"}
+        for row in result.iter_rows(named=True):
+            assert row["gene"] == gene_map[row["group"]]
+
+    def test_membership_counts(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        for group_name in on_target_adata.obs["guide"].unique():
+            expected_count = (on_target_adata.obs["guide"] == group_name).sum()
+            row = result.filter(pl.col("group") == group_name)
+            assert row["group_membership"][0] == expected_count
+
+    def test_ref_membership_is_constant(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        ref_count = (on_target_adata.obs["guide"] == DEFAULT_REFERENCE).sum()
+        assert result["ref_membership"].unique().to_list() == [ref_count]
+
+    def test_pvalues_in_range(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()
+
+    def test_fdr_in_range(self, on_target_adata):
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        assert (result["fdr"] >= 0).all()
+        assert (result["fdr"] <= 1).all()
+
+    def test_statistics_against_scipy(self, on_target_adata):
+        """Verify MWU statistic matches scipy for group A at its target gene (gene_1)."""
+        result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+
+        X = on_target_adata.X
+        obs = on_target_adata.obs
+        ntc_mask = (obs["guide"] == DEFAULT_REFERENCE).values
+        group_a_mask = (obs["guide"] == "A").values
+        gene_idx = list(on_target_adata.var_names).index("gene_1")
+
+        ntc_vals = np.asarray(X[ntc_mask, gene_idx]).ravel()
+        group_vals = np.asarray(X[group_a_mask, gene_idx]).ravel()
+
+        scipy_result = stats.mannwhitneyu(
+            group_vals, ntc_vals, alternative="two-sided", method="asymptotic"
+        )
+
+        row = result.filter(pl.col("group") == "A")
+        np.testing.assert_allclose(
+            row["statistic"][0], scipy_result.statistic, rtol=1e-6
+        )
+        np.testing.assert_allclose(row["p_value"][0], scipy_result.pvalue, rtol=1e-6)
+
+    def test_sparse_dense_agreement(self, on_target_adata, on_target_adata_sparse):
+        dense_result = pdex(
+            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+        )
+        sparse_result = pdex(
+            on_target_adata_sparse,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+        )
+
+        assert dense_result.shape == sparse_result.shape
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+
+class TestPdexOnTargetValidation:
+    def test_missing_gene_col_kwarg(self, on_target_adata):
+        with pytest.raises(ValueError, match="gene_col"):
+            pdex(on_target_adata, groupby="guide", mode="on_target")
+
+    def test_missing_gene_col_column(self, small_adata):
+        with pytest.raises(ValueError, match="Missing column"):
+            pdex(small_adata, groupby="guide", mode="on_target", gene_col="nonexistent")
+
+    def test_ambiguous_group_gene_mapping(self, on_target_adata):
+        """A group with two different target_gene values should raise."""
+        adata = on_target_adata.copy()
+        # Give group A two different target genes
+        a_indices = adata.obs[adata.obs["guide"] == "A"].index
+        adata.obs.loc[a_indices[0], "target_gene"] = "gene_3"
+        with pytest.raises(ValueError, match="maps to 2 genes"):
+            pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
+
+    def test_unknown_gene_name(self, on_target_adata):
+        """A target gene not in var_names should raise."""
+        adata = on_target_adata.copy()
+        adata.obs.loc[adata.obs["guide"] == "A", "target_gene"] = "not_a_real_gene"
+        with pytest.raises(ValueError, match="not found in var_names"):
+            pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
+
+
 class TestPdexValidation:
     def test_invalid_mode(self, small_adata):
         with pytest.raises(ValueError, match="Invalid mode"):

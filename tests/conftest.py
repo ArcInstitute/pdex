@@ -46,3 +46,19 @@ def small_adata_sparse(small_adata):
     adata = small_adata.copy()
     adata.X = csr_matrix(adata.X)
     return adata
+
+
+@pytest.fixture
+def on_target_adata(small_adata):
+    """small_adata with a target_gene obs column mapping each group to one gene."""
+    gene_map = {"non-targeting": "gene_0", "A": "gene_1", "B": "gene_2"}
+    small_adata.obs["target_gene"] = small_adata.obs["guide"].map(gene_map)
+    return small_adata
+
+
+@pytest.fixture
+def on_target_adata_sparse(on_target_adata):
+    """on_target_adata with sparse CSR X matrix."""
+    adata = on_target_adata.copy()
+    adata.X = csr_matrix(adata.X)
+    return adata
