@@ -8,7 +8,7 @@ import pandas as pd
 import polars as pl
 from anndata.experimental.backed import Dataset2D
 from numba_mwu import sparse_column_index
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, issparse
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
@@ -125,13 +125,22 @@ def _isolate_matrix(
     mask_x: np.ndarray | int,
     mask_y: np.ndarray | int | None = None,
 ) -> np.ndarray | csr_matrix:
-    """Returns the matrix of cells that match the mask."""
+    """Returns the matrix of cells that match the mask, always in-memory."""
     if adata.X is None:
         raise ValueError("AnnData object does not have a matrix.")
     if mask_y is None:
-        return adata.X[mask_x]  # type: ignore
+        result = adata.X[mask_x]  # type: ignore[not-subscriptable]
     else:
-        return adata.X[mask_x, mask_y]  # type: ignore
+        result = adata.X[mask_x, mask_y]  # type: ignore[not-subscriptable]
+
+    # Fast path: already in-memory
+    if isinstance(result, (np.ndarray, csr_matrix)):
+        return result
+    # Backed sparse -> csr_matrix
+    if issparse(result):
+        return csr_matrix(result)
+    # Backed dense (h5py.Dataset slice, dask, etc.) -> ndarray
+    return np.asarray(result)
 
 
 def pdex(
