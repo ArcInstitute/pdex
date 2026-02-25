@@ -49,67 +49,50 @@ def _build_group_gene_map(
     obs: pd.DataFrame | Dataset2D,
     groupby: str,
     gene_col: str,
-    unique_groups: np.ndarray,
+    control: str,
     var_names: pd.Index,
 ) -> dict[str, int]:
     """Returns a mapping of group name -> gene column index in var_names.
 
-    Raises if gene_col is missing or any group maps to multiple genes.
-    Skips groups whose target gene is not in var_names, with a warning.
+    Raises if gene_col is missing or any non-control group maps to multiple genes.
+    Logs a warning and skips groups whose target gene is not in var_names.
     """
     if gene_col not in obs.columns:
         raise ValueError(
             f"Missing column: {gene_col}. Available: {', '.join(obs.columns)}"
         )
-    if groupby not in obs.columns:
-        raise ValueError(
-            f"Missing column: {groupby}. Available: {', '.join(obs.columns)}"
-        )
 
-    # One-pass: drop NaN gene entries, then get unique (group, gene) pairs
-    mapping = (
-        pd.DataFrame(obs[[groupby, gene_col]])
-        .dropna(subset=[gene_col])
-        .drop_duplicates()
-    )
+    # Unique (group, gene) pairs, dropping NaN gene entries
+    mapping = pd.DataFrame(obs[[groupby, gene_col]]).drop_duplicates().dropna()
 
-    # Detect any group mapped to more than one gene
-    counts = mapping.groupby(groupby, sort=False)[gene_col].count()
+    # Check for non-control groups mapped to more than one gene, then drop control
+    mapping = mapping[mapping[groupby] != control]
+    counts = mapping[groupby].value_counts()
     multi = counts[counts > 1]
     if not multi.empty:
-        details = "; ".join(
-            f"'{g}' -> {list(mapping.loc[mapping[groupby] == g, gene_col])}"
-            for g in multi.index
-        )
+        multi_groups = ", ".join(multi.index.values)
         raise ValueError(
-            f"{len(multi)} group(s) map to multiple genes in '{gene_col}': {details}"
+            f"Groups map to multiple genes in '{gene_col}': {multi_groups}"
         )
 
-    # Build lookup restricted to unique_groups
-    unique_groups_set = set(unique_groups)
-    mapping = mapping[mapping[groupby].isin(unique_groups_set)]
-    group_to_gene: dict[str, str] = dict(zip(mapping[groupby], mapping[gene_col]))
-
-    skipped: list[str] = []
-    group_gene_map: dict[str, int] = {}
-    for group in unique_groups:
-        if group not in group_to_gene:
-            skipped.append(f"'{group}' (no target gene)")
-            continue
-        gene_name = group_to_gene[group]
-        if gene_name not in var_names:
-            skipped.append(f"'{group}' (gene '{gene_name}' not in var_names)")
-            continue
-        group_gene_map[group] = var_names.get_loc(gene_name)
-
-    if skipped:
-        msg = (
-            f"Skipping {len(skipped)} group(s) with unresolvable target genes: "
-            + ", ".join(skipped)
+    # Build a fast gene-name -> index lookup
+    gene_idx_map = {g: idx for idx, g in enumerate(var_names)}
+    missing_var = ~mapping[gene_col].isin(gene_idx_map)
+    if np.any(missing_var):
+        n_missing = int(np.sum(missing_var))
+        missing_detail = ", ".join(
+            f"{g} ({gene})"
+            for g, gene in zip(
+                mapping[groupby][missing_var], mapping[gene_col][missing_var]
+            )
         )
+        msg = f"Found {n_missing} groups with missing on-target genes in adata.var: {missing_detail}"
         log.warning(msg)
         warnings.warn(msg, UserWarning, stacklevel=3)
-    return group_gene_map
+
+    mapping = mapping[~missing_var].copy()
+    mapping["VAR_INDEX"] = mapping[gene_col].map(gene_idx_map)
+    return mapping.set_index(groupby)["VAR_INDEX"].to_dict()
 
 
 def _unique_groups(
@@ -318,7 +301,11 @@ def _pdex_on_target(
     )
 
     group_gene_map = _build_group_gene_map(
-        adata.obs, groupby, gene_col, unique_groups, adata.var_names
+        adata.obs, groupby, gene_col, reference, adata.var_names
+    )
+    log.info(
+        "on_target: evaluating expression of %d group/gene pairs",
+        len(group_gene_map),
     )
 
     rows = []

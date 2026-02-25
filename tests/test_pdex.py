@@ -252,14 +252,14 @@ class TestPdexOnTargetMode:
         result = pdex(
             on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
         )
-        n_groups = on_target_adata.obs["guide"].nunique()
+        n_groups = on_target_adata.obs["guide"].nunique() - 1  # control excluded
         assert result.shape[0] == n_groups
 
     def test_gene_column_values(self, on_target_adata):
         result = pdex(
             on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
         )
-        gene_map = {"non-targeting": "gene_0", "A": "gene_1", "B": "gene_2"}
+        gene_map = {"A": "gene_1", "B": "gene_2"}
         for row in result.iter_rows(named=True):
             assert row["feature"] == gene_map[row["target"]]
 
@@ -267,7 +267,7 @@ class TestPdexOnTargetMode:
         result = pdex(
             on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
         )
-        for group_name in on_target_adata.obs["guide"].unique():
+        for group_name in result["target"].to_list():
             expected_count = (on_target_adata.obs["guide"] == group_name).sum()
             row = result.filter(pl.col("target") == group_name)
             assert row["target_membership"][0] == expected_count
@@ -366,7 +366,7 @@ class TestPdexOnTargetValidation:
                 adata, groupby="guide", mode="on_target", gene_col="target_gene"
             )
         assert "A" not in result["target"].to_list()
-        assert result.shape[0] == adata.obs["guide"].nunique() - 1
+        assert result.shape[0] == adata.obs["guide"].nunique() - 2  # control + A excluded
 
 
 class TestPdexValidation:
