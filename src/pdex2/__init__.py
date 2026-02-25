@@ -133,6 +133,75 @@ def pdex(
     geometric_mean: bool = True,
     **kwargs,
 ) -> pl.DataFrame:
+    """Run parallel differential expression analysis on single-cell data.
+
+    For each group defined by ``groupby``, computes per-gene pseudobulk statistics
+    (mean expression, fold change, percent change) and a Mann-Whitney U test against
+    a reference, returning FDR-corrected p-values.
+
+    Parameters
+    ----------
+    adata:
+        Annotated data matrix. Expression values are read from ``adata.X``, which
+        may be dense or CSR sparse.
+    groupby:
+        Column in ``adata.obs`` that defines the groups (e.g. guide identity).
+        Empty strings and NaN values are excluded.
+    mode:
+        Comparison strategy:
+
+        - ``"ref"`` — each group vs a single reference group (default
+          ``"non-targeting"``; override with ``reference=``).
+        - ``"all"`` — each group vs all remaining cells (1-vs-rest).
+        - ``"on_target"`` — each group vs the reference, but only at the gene
+          targeted by that group. Requires ``gene_col=`` kwarg naming a column
+          in ``adata.obs`` that maps each group to its target gene.
+    threads:
+        Number of Numba threads. ``0`` (default) uses all available CPUs.
+    is_log1p:
+        Whether ``adata.X`` contains log1p-transformed values.
+
+        - ``True`` — data is log1p-transformed; geometric mean is computed as
+          ``expm1(mean(X))``.
+        - ``False`` — data is raw/normalised counts; geometric mean is computed
+          as ``expm1(mean(log1p(X)))``.
+        - ``None`` (default) — auto-detected via a max-value heuristic and a
+          ``UserWarning`` is emitted. Pass explicitly to suppress the warning.
+    geometric_mean:
+        If ``True`` (default), the pseudobulk summary is the geometric mean of
+        expression values, back-transformed to count space. The exact computation
+        depends on ``is_log1p`` (see above). If ``False``, the arithmetic mean of
+        ``adata.X`` is used directly.
+
+        The reported ``target_mean`` / ``ref_mean`` output columns always reflect
+        the same quantity used to compute ``fold_change`` and ``percent_change``.
+    **kwargs:
+        Mode-specific keyword arguments:
+
+        - ``reference`` (str) — reference group name for ``mode="ref"`` and
+          ``mode="on_target"``. Defaults to ``"non-targeting"``.
+        - ``gene_col`` (str) — required for ``mode="on_target"``. Names a column
+          in ``adata.obs`` mapping each group to its target gene in ``adata.var``.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (group, feature) pair with columns: ``target``, ``feature``,
+        ``target_mean``, ``ref_mean``, ``target_membership``, ``ref_membership``,
+        ``fold_change``, ``percent_change``, ``p_value``, ``statistic``, ``fdr``.
+
+        ``target_mean`` and ``ref_mean`` are always in **natural (count) space**,
+        regardless of ``is_log1p``. When ``geometric_mean=True`` they are the
+        geometric mean back-transformed via ``expm1``; when ``geometric_mean=False``
+        they are the arithmetic mean of ``adata.X`` as-is (which will be in
+        log space if ``is_log1p=True``).
+
+        ``fold_change`` is **log2** of the ratio of pseudobulk means
+        (``log2(target_mean / ref_mean)``). ``percent_change`` is the linear
+        relative change (``(target_mean - ref_mean) / ref_mean``).
+
+        For ``mode="on_target"`` each group produces a single row (its target gene only).
+    """
     log.info(
         "pdex called: mode=%s, groupby=%r, n_obs=%d, n_vars=%d",
         mode,
@@ -266,7 +335,6 @@ def _pdex_all(
     groupby: str,
     geometric_mean: bool = True,
     is_log1p: bool = False,
-    **kwargs,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
