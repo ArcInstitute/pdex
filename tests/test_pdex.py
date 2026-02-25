@@ -169,7 +169,9 @@ class TestPdexAllMode:
             expected_group = (small_adata.obs["guide"] == group_name).sum()
             expected_rest = n_total - expected_group
             group_rows = result.filter(pl.col("target") == group_name)
-            assert group_rows["target_membership"].unique().to_list() == [expected_group]
+            assert group_rows["target_membership"].unique().to_list() == [
+                expected_group
+            ]
             assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
 
     def test_pvalues_in_range(self, small_adata):
@@ -366,7 +368,9 @@ class TestPdexOnTargetValidation:
                 adata, groupby="guide", mode="on_target", gene_col="target_gene"
             )
         assert "A" not in result["target"].to_list()
-        assert result.shape[0] == adata.obs["guide"].nunique() - 2  # control + A excluded
+        assert (
+            result.shape[0] == adata.obs["guide"].nunique() - 2
+        )  # control + A excluded
 
 
 class TestPdexValidation:
@@ -385,3 +389,110 @@ class TestPdexValidation:
     def test_missing_reference(self, small_adata):
         with pytest.raises(ValueError, match="Missing reference"):
             pdex(small_adata, groupby="guide", mode="ref", reference="does_not_exist")
+
+
+class TestPdexGeometricMean:
+    """Tests for is_log1p / geometric_mean behaviour."""
+
+    def test_autodetect_warns(self, small_adata):
+        """Omitting is_log1p should emit a UserWarning."""
+        with pytest.warns(UserWarning, match="is_log1p not specified"):
+            pdex(small_adata, groupby="guide", mode="ref", geometric_mean=False)
+
+    def test_arithmetic_mean_matches_original(self, small_adata):
+        """geometric_mean=False, is_log1p=False should reproduce the original arithmetic-mean result."""
+        result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            geometric_mean=False,
+        )
+        # target_mean for a group should equal plain numpy mean of that group's cells
+        X = small_adata.X
+        obs = small_adata.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(X[group_mask, gene_idx].mean())
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_geometric_mean_is_log1p_true(self, small_adata_log1p):
+        """geometric_mean=True, is_log1p=True: target_mean = expm1(mean(log1p_data))."""
+        result = pdex(
+            small_adata_log1p,
+            groupby="guide",
+            mode="ref",
+            is_log1p=True,
+            geometric_mean=True,
+        )
+        X = small_adata_log1p.X
+        obs = small_adata_log1p.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(np.expm1(X[group_mask, gene_idx].mean()))
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_geometric_mean_is_log1p_false(self, small_adata):
+        """geometric_mean=True, is_log1p=False: target_mean = expm1(mean(log1p(counts)))."""
+        result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            geometric_mean=True,
+        )
+        X = small_adata.X
+        obs = small_adata.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(np.expm1(np.log1p(X[group_mask, gene_idx]).mean()))
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_both_log1p_paths_agree(self, small_adata, small_adata_log1p):
+        """pdex on raw counts with is_log1p=False and on log1p counts with is_log1p=True
+        should yield identical target_mean values."""
+        raw_result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            geometric_mean=True,
+        )
+        log_result = pdex(
+            small_adata_log1p,
+            groupby="guide",
+            mode="ref",
+            is_log1p=True,
+            geometric_mean=True,
+        )
+        np.testing.assert_allclose(
+            raw_result["target_mean"].to_numpy(),
+            log_result["target_mean"].to_numpy(),
+            rtol=1e-10,
+        )
+        np.testing.assert_allclose(
+            raw_result["ref_mean"].to_numpy(),
+            log_result["ref_mean"].to_numpy(),
+            rtol=1e-10,
+        )
+
+    def test_all_mode_geometric_mean(self, small_adata):
+        """geometric_mean=True works in mode='all'."""
+        result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="all",
+            is_log1p=False,
+            geometric_mean=True,
+        )
+        assert isinstance(result, pl.DataFrame)
+        X = small_adata.X
+        obs = small_adata.obs
+        group_mask = (obs["guide"] == "B").values
+        gene_idx = 1
+        expected_mean = float(np.expm1(np.log1p(X[group_mask, gene_idx]).mean()))
+        row = result.filter((pl.col("target") == "B") & (pl.col("feature") == "gene_1"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)

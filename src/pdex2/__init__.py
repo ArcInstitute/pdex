@@ -12,9 +12,9 @@ from scipy.sparse import csr_matrix
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
-from pdex2._math import bulk_matrix, fold_change, mwu, percent_change
+from pdex2._math import fold_change, mwu, percent_change, pseudobulk
 
-from ._utils import set_numba_threadpool
+from ._utils import _detect_is_log1p, set_numba_threadpool
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +129,8 @@ def pdex(
     groupby: str,
     mode: PDEX_MODES = "ref",
     threads: int = 0,
+    is_log1p: bool | None = None,
+    geometric_mean: bool = True,
     **kwargs,
 ) -> pl.DataFrame:
     log.info(
@@ -144,12 +146,36 @@ def pdex(
 
     _validate_groupby(adata.obs, groupby)
 
+    # Resolve is_log1p — auto-detect if not specified
+    if is_log1p is None:
+        is_log1p = _detect_is_log1p(adata.X)
+        msg = (
+            f"is_log1p not specified; auto-detected {is_log1p}. "
+            "Pass is_log1p explicitly to suppress this warning."
+        )
+        log.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
+
+    log.info("is_log1p=%s, geometric_mean=%s", is_log1p, geometric_mean)
+
     if mode == "ref":
         reference = kwargs.pop("reference", DEFAULT_REFERENCE)
         log.info("Reference group: %r", reference)
-        return _pdex_ref(adata, groupby=groupby, reference=reference)
+        return _pdex_ref(
+            adata,
+            groupby=groupby,
+            reference=reference,
+            geometric_mean=geometric_mean,
+            is_log1p=is_log1p,
+        )
     elif mode == "all":
-        return _pdex_all(adata, groupby=groupby, **kwargs)
+        return _pdex_all(
+            adata,
+            groupby=groupby,
+            geometric_mean=geometric_mean,
+            is_log1p=is_log1p,
+            **kwargs,
+        )
     elif mode == "on_target":
         gene_col = kwargs.pop("gene_col", None)
         if gene_col is None:
@@ -157,7 +183,12 @@ def pdex(
         reference = kwargs.pop("reference", DEFAULT_REFERENCE)
         log.info("on_target: gene_col=%r, reference=%r", gene_col, reference)
         return _pdex_on_target(
-            adata, groupby=groupby, gene_col=gene_col, reference=reference
+            adata,
+            groupby=groupby,
+            gene_col=gene_col,
+            reference=reference,
+            geometric_mean=geometric_mean,
+            is_log1p=is_log1p,
         )
     else:
         raise ValueError(f"Invalid mode: {mode}")
@@ -167,6 +198,8 @@ def _pdex_ref(
     adata: ad.AnnData,
     groupby: str,
     reference: str = DEFAULT_REFERENCE,
+    geometric_mean: bool = True,
+    is_log1p: bool = False,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups (excluding reference)", len(unique_groups) - 1)
@@ -176,7 +209,7 @@ def _pdex_ref(
     log.info("Reference %r: %d cells", reference, ref_mask.size)
 
     ref_matrix = _isolate_matrix(adata, ref_mask)
-    ref_bulk = bulk_matrix(ref_matrix)
+    ref_bulk = pseudobulk(ref_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p)
     ref_membership = ref_mask.size
 
     # Either sparse_column_index or ref_matrix
@@ -196,7 +229,9 @@ def _pdex_ref(
         group_name = unique_groups[group_idx]
         group_mask = np.flatnonzero(unique_group_indices == group_idx)
         group_matrix = _isolate_matrix(adata, group_mask)
-        group_bulk = bulk_matrix(group_matrix)
+        group_bulk = pseudobulk(
+            group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+        )
 
         fc = fold_change(group_bulk, ref_bulk)
         pc = percent_change(group_bulk, ref_bulk)
@@ -229,6 +264,8 @@ def _pdex_ref(
 def _pdex_all(
     adata: ad.AnnData,
     groupby: str,
+    geometric_mean: bool = True,
+    is_log1p: bool = False,
     **kwargs,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
@@ -251,8 +288,12 @@ def _pdex_all(
         group_matrix = _isolate_matrix(adata, group_mask)
         rest_matrix = _isolate_matrix(adata, rest_mask)
 
-        group_bulk = bulk_matrix(group_matrix)
-        rest_bulk = bulk_matrix(rest_matrix)
+        group_bulk = pseudobulk(
+            group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+        )
+        rest_bulk = pseudobulk(
+            rest_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+        )
 
         fc = fold_change(group_bulk, rest_bulk)
         pc = percent_change(group_bulk, rest_bulk)
@@ -288,6 +329,8 @@ def _pdex_on_target(
     groupby: str,
     gene_col: str,
     reference: str = DEFAULT_REFERENCE,
+    geometric_mean: bool = True,
+    is_log1p: bool = False,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     ref_index = _identify_reference_index(unique_groups, reference)
@@ -332,8 +375,12 @@ def _pdex_on_target(
         group_col = np.asarray(group_col).reshape(-1, 1)
         ref_col = np.asarray(ref_col).reshape(-1, 1)
 
-        target_mean = float(group_col.mean())
-        ref_mean = float(ref_col.mean())
+        target_mean = float(
+            pseudobulk(group_col, geometric_mean=geometric_mean, is_log1p=is_log1p)[0]
+        )
+        ref_mean = float(
+            pseudobulk(ref_col, geometric_mean=geometric_mean, is_log1p=is_log1p)[0]
+        )
 
         fc = float(fold_change(np.array([target_mean]), np.array([ref_mean]))[0])
         pc = float(percent_change(np.array([target_mean]), np.array([ref_mean]))[0])

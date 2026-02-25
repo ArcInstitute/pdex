@@ -62,3 +62,11 @@ def on_target_adata_sparse(on_target_adata):
     adata = on_target_adata.copy()
     adata.X = csr_matrix(adata.X)
     return adata
+
+
+@pytest.fixture
+def small_adata_log1p(small_adata):
+    """small_adata with X replaced by log1p-transformed values."""
+    adata = small_adata.copy()
+    adata.X = np.log1p(adata.X)
+    return adata
