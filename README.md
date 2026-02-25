@@ -1,128 +1,102 @@
 # pdex
 
-parallel differential expression for single-cell perturbation sequencing
+Parallel differential expression for single-cell perturbation sequencing.
 
 ## Installation
 
-Add to your `pyproject.toml` file with [`uv`](https://github.com/astral-sh/uv)
-
 ```bash
+# add to pyproject.toml
 uv add pdex
+
+# add to env
+uv pip install pdex
 ```
 
-## Summary
+## Overview
 
-This is a python package for performing parallel differential expression between multiple groups and a control.
+`pdex` computes per-gene differential expression statistics between perturbation groups in single-cell data using Mann-Whitney U tests with FDR correction. It was originally designed for CRISPR screen and perturbation sequencing datasets with many groups and large cell counts.
 
-It is optimized for very large datasets and very large numbers of perturbations.
+It supports dense and sparse (CSR) expression matrices, and uses [numba-mwu](https://github.com/noamteyssier/numba-mwu) for Numba-accelerated Mann-Whitney U computation.
 
-It makes use of shared memory to parallelize the computation to a high number of threads and minimizes the [IPC](https://en.wikipedia.org/wiki/Inter-process_communication) between processes to reduce overhead.
+## Modes
 
-It supports the following metrics:
-
-- Wilcoxon Rank Sum
-- Anderson-Darling
-- T-Test
-
-## Backed vs In-Memory AnnData
-
-pdex adapts its execution strategy based on how the AnnData object is stored:
-
-- **In-memory AnnData** (e.g., loaded via `sc.read_h5ad(path)` without `backed="r"`):
-  pdex uses a shared-memory multiprocessing workflow. Each worker process gets
-  access to the full expression matrix through shared memory, which minimizes
-  serialization overhead. Parallelism is configured via the `num_workers`
-  parameter (process count). `num_threads` is ignored in this mode because numba
-  kernels operate on per-target slices entirely in memory.
-- **Backed AnnData** (`adata.X` is an on-disk HDF5 dataset): pdex automatically
-  switches to the low-memory chunked implementation. Gene chunks are streamed
-  from disk, the reference group is computed once per chunk, and targets are
-  processed in parallel via `num_workers` (thread pool). Within each target,
-  Wilcoxon metrics can additionally use numba parallelization controlled by
-  `num_threads`. This mode avoids loading the entire matrix into RAM while still
-  enabling both target-level and gene-level parallelism.
-
-If a backed dataset is supplied without enabling low-memory mode, pdex raises a
-helpful error explaining that chunked processing is required. Conversely, you can
-force the chunked path for large in-memory matrices by passing `low_memory=True`.
-
-## Parallelization
-
-`parallel_differential_expression` exposes two orthogonal knobs for controlling
-parallel execution:
-
-- `num_workers` controls the number of Python threads that process targets within
-  each gene chunk. `None` (default in low-memory mode) enables an auto-detected
-  worker count based on available CPUs, while `1` disables thread-level parallelism.
-- `num_threads` controls the numba thread pool used by the Wilcoxon kernel. `None`
-  lets numba auto-detect the optimal size, whereas `1` turns numba parallelization
-  off. This setting is only used in low-memory mode and only when `metric="wilcoxon"`.
-  When pdex detects non-integer expression values in a gene chunk (for example, after
-  log-normalization), it automatically disables numba for that chunk, logs a warning,
-  and falls back to the SciPy implementation to preserve correct rank ordering.
-
-These strategies can be combined: for example, `num_workers=2, num_threads=8`
-runs two target threads that share an eight-thread numba pool. When the metric
-does not support numba acceleration, pdex automatically logs a warning and
-falls back to thread-only execution.
+| Mode          | Description                                                         |
+| ------------- | ------------------------------------------------------------------- |
+| `"ref"`       | Each group vs a single reference group (default: `"non-targeting"`) |
+| `"all"`       | Each group vs all remaining cells (1-vs-rest)                       |
+| `"on_target"` | Each group vs the reference at its single target gene only          |
 
 ## Usage
 
+### Reference mode (default)
+
 ```python
 import anndata as ad
-import numpy as np
-import pandas as pd
+from pdex import pdex
 
-from pdex import parallel_differential_expression
+adata = ad.read_h5ad("screen.h5ad")
 
-PERT_COL = "perturbation"
-CONTROL_VAR = "control"
-
-N_CELLS = 1000
-N_GENES = 100
-N_PERTS = 10
-MAX_UMI = 1e6
-
-
-def build_random_anndata(
-    n_cells: int = N_CELLS,
-    n_genes: int = N_GENES,
-    n_perts: int = N_PERTS,
-    pert_col: str = PERT_COL,
-    control_var: str = CONTROL_VAR,
-) -> ad.AnnData:
-    """Sample a random AnnData object."""
-    return ad.AnnData(
-        X=np.random.randint(0, MAX_UMI, size=(n_cells, n_genes)),
-        obs=pd.DataFrame(
-            {
-                pert_col: np.random.choice(
-                    [f"pert_{i}" for i in range(n_perts)] + [control_var],
-                    size=n_cells,
-                    replace=True,
-                ),
-            }
-        ),
-    )
-
-
-def main():
-    adata = build_random_anndata()
-
-    # Run pdex with default metric (wilcoxon)
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
-
-    # Run pdex with alt metric (anderson)
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="anderson"
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+results = pdex(
+    adata,
+    groupby="guide",
+    mode="ref",
+    is_log1p=False,
+)
 ```
+
+### 1-vs-rest mode
+
+```python
+results = pdex(
+    adata,
+    groupby="guide",
+    mode="all",
+    is_log1p=False,
+)
+```
+
+### On-target mode
+
+Requires a column in `adata.obs` mapping each group to its target gene:
+
+```python
+results = pdex(
+    adata,
+    groupby="guide",
+    mode="on_target",
+    gene_col="target_gene",
+    is_log1p=False,
+)
+```
+
+## Parameters
+
+| Parameter        | Type           | Default           | Description                                                |
+| ---------------- | -------------- | ----------------- | ---------------------------------------------------------- |
+| `adata`          | `AnnData`      | required          | Annotated data matrix (dense or sparse CSR)                |
+| `groupby`        | `str`          | required          | Column in `adata.obs` defining groups                      |
+| `mode`           | `str`          | `"ref"`           | Comparison mode: `"ref"`, `"all"`, or `"on_target"`        |
+| `threads`        | `int`          | `0`               | Numba thread count (`0` = all CPUs)                        |
+| `is_log1p`       | `bool \| None` | `None`            | Whether data is log1p-transformed. Auto-detected if `None` |
+| `geometric_mean` | `bool`         | `True`            | Use geometric mean for pseudobulk (vs arithmetic)          |
+| `as_pandas`      | `bool`         | `False`           | Return a pandas DataFrame instead of Polars                |
+| `reference`      | `str`          | `"non-targeting"` | Reference group name (modes: `ref`, `on_target`)           |
+| `gene_col`       | `str`          | —                 | Column mapping groups to target genes (mode: `on_target`)  |
+
+## Output
+
+Returns a Polars DataFrame (or pandas if `as_pandas=True`) with one row per (group, gene) pair:
+
+| Column              | Description                                        |
+| ------------------- | -------------------------------------------------- |
+| `target`            | Perturbation group name                            |
+| `feature`           | Gene name                                          |
+| `target_mean`       | Pseudobulk mean for the target group (count space) |
+| `ref_mean`          | Pseudobulk mean for the reference (count space)    |
+| `target_membership` | Number of cells in the target group                |
+| `ref_membership`    | Number of cells in the reference                   |
+| `fold_change`       | log2(target_mean / ref_mean)                       |
+| `percent_change`    | (target_mean - ref_mean) / ref_mean                |
+| `p_value`           | Mann-Whitney U p-value                             |
+| `statistic`         | Mann-Whitney U statistic                           |
+| `fdr`               | FDR-corrected p-value (per-group, across genes)    |
