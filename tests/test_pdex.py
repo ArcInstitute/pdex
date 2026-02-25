@@ -1,297 +1,647 @@
-import anndata as ad
+"""Integration tests for pdex() and _pdex_ref()."""
+
 import numpy as np
-import pandas as pd
 import polars as pl
-from scipy.sparse import csr_matrix
+import pytest
+from scipy import stats
 
-from pdex import parallel_differential_expression
+from pdex import DEFAULT_REFERENCE, pdex
 
-PERT_COL = "perturbation"
-CONTROL_VAR = "control"
-
-N_CELLS = 1000
-N_GENES = 100
-N_PERTS = 10
-MAX_UMI = 1e6
-
-RANDOM_SEED = 42
-
-
-def build_random_anndata(
-    n_cells: int = N_CELLS,
-    n_genes: int = N_GENES,
-    n_perts: int = N_PERTS,
-    pert_col: str = PERT_COL,
-    control_var: str = CONTROL_VAR,
-    random_state: int = RANDOM_SEED,
-) -> ad.AnnData:
-    """Sample a random AnnData object."""
-    if random_state is not None:
-        np.random.seed(random_state)
-    return ad.AnnData(
-        X=np.random.randint(0, int(MAX_UMI), size=(n_cells, n_genes)),
-        obs=pd.DataFrame(
-            {
-                pert_col: np.random.choice(
-                    [f"pert_{i}" for i in range(n_perts)] + [control_var],
-                    size=n_cells,
-                    replace=True,
-                ),
-            },
-            index=np.arange(n_cells).astype(str),
-        ),
-    )
+EXPECTED_COLUMNS = {
+    "target",
+    "feature",
+    "target_mean",
+    "ref_mean",
+    "target_membership",
+    "ref_membership",
+    "fold_change",
+    "percent_change",
+    "p_value",
+    "statistic",
+    "fdr",
+}
 
 
-def build_small_anndata() -> ad.AnnData:
-    rng = np.random.default_rng(0)
-    n_cells_per_group = 48
-    n_genes = 5
-    control = rng.integers(0, 50, size=(n_cells_per_group, n_genes))
-    pert = rng.integers(0, 50, size=(n_cells_per_group, n_genes))
-    X = np.vstack([control, pert]).astype(np.int32)
-    obs = pd.DataFrame(
-        {PERT_COL: [CONTROL_VAR] * n_cells_per_group + ["pert_a"] * n_cells_per_group},
-        index=pd.Index([f"cell_{i}" for i in range(X.shape[0])]),
-    )
-    var = pd.DataFrame(index=pd.Index([f"gene_{i}" for i in range(n_genes)]))
-    return ad.AnnData(X=X, obs=obs, var=var, dtype=X.dtype)
+class TestPdexRefMode:
+    """Tests for pdex(..., mode='ref')."""
 
+    def test_returns_dataframe(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        assert isinstance(result, pl.DataFrame)
 
-def test_dex_dense_array():
-    adata = build_random_anndata()
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+    def test_output_columns(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        assert set(result.columns) == EXPECTED_COLUMNS
 
+    def test_output_shape(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        n_genes = small_adata.n_vars
+        n_groups = len(small_adata.obs["guide"].unique())
+        # Reference group is excluded from the output
+        assert result.shape[0] == (n_groups - 1) * n_genes
 
-def test_dex_dense_array_log():
-    adata = build_random_anndata()
-    adata.X = np.log1p(adata.X)  # type: ignore
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+    def test_reference_excluded_from_output(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        assert DEFAULT_REFERENCE not in result["target"].to_list()
 
+    def test_group_names_present(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        result_groups = set(result["target"].unique().to_list())
+        expected_groups = set(small_adata.obs["guide"].unique()) - {DEFAULT_REFERENCE}
+        assert result_groups == expected_groups
 
-def test_dex_dense_array_log_post_agg():
-    adata = build_random_anndata()
-    adata.X = np.log1p(adata.X)  # type: ignore
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        exp_post_agg=True,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+    def test_membership_counts(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        non_ref_groups = [
+            g for g in small_adata.obs["guide"].unique() if g != DEFAULT_REFERENCE
+        ]
+        for group_name in non_ref_groups:
+            expected_count = (small_adata.obs["guide"] == group_name).sum()
+            group_rows = result.filter(pl.col("target") == group_name)
+            actual_counts = group_rows["target_membership"].unique().to_list()
+            assert actual_counts == [expected_count]
 
+    def test_ref_membership_is_constant(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        ref_count = (small_adata.obs["guide"] == DEFAULT_REFERENCE).sum()
+        assert result["ref_membership"].unique().to_list() == [ref_count]
 
-def test_dex_dense_matrix():
-    adata = build_random_anndata()
-    adata.X = np.matrix(adata.X)  # type: ignore
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+    def test_pvalues_in_range(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()
 
+    def test_fdr_in_range(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        assert (result["fdr"] >= 0).all()
+        assert (result["fdr"] <= 1).all()
 
-def test_dex_sparse_matrix():
-    adata = build_random_anndata()
-    adata.X = csr_matrix(adata.X)
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+    def test_fold_change_sign(self, small_adata):
+        """Groups A and B have higher expression than non-targeting,
+        so fold change should be positive."""
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        for group_name in ["A", "B"]:
+            group_rows = result.filter(pl.col("target") == group_name)
+            # Mean fold change should be positive since we boosted these groups
+            mean_fc = group_rows["fold_change"].mean()
+            assert mean_fc > 0, f"Expected positive fold change for group {group_name}"  # type: ignore
 
+    def test_statistics_against_scipy(self, small_adata):
+        """Verify MWU statistics match scipy for at least one group/gene pair."""
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
 
-def test_dex_wilcoxon():
-    adata = build_random_anndata()
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="wilcoxon",
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
+        X = small_adata.X
+        obs = small_adata.obs
+        ntc_mask = obs["guide"] == DEFAULT_REFERENCE
+        group_a_mask = obs["guide"] == "A"
 
+        # Compare gene 0 for group A
+        ntc_vals = X[ntc_mask.values, 0]
+        group_vals = X[group_a_mask.values, 0]
 
-def test_dex_wilcoxon_no_tie_correct():
-    adata = build_random_anndata()
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="wilcoxon",
-        tie_correct=False,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
-
-
-def test_dex_anderson():
-    adata = build_random_anndata()
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="anderson",
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
-
-
-def test_dex_ttest():
-    adata = build_random_anndata()
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="t-test",
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
-
-
-def test_dex_unknown_metric():
-    adata = build_random_anndata()
-    try:
-        parallel_differential_expression(
-            adata,
-            reference=CONTROL_VAR,
-            groupby_key=PERT_COL,
-            metric="unknown",
+        scipy_result = stats.mannwhitneyu(
+            group_vals, ntc_vals, alternative="two-sided", method="asymptotic"
         )
-        assert False
-    except ValueError:
-        "Caught error"
 
+        pdex_group_a = result.filter(pl.col("target") == "A")
+        pdex_pval = pdex_group_a["p_value"][0]
+        pdex_stat = pdex_group_a["statistic"][0]
 
-def test_dex_single_observed_value_anderson():
-    adata = build_random_anndata()
-    adata.X = np.zeros_like(adata.X)
-    parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="anderson",
-    )
+        np.testing.assert_allclose(pdex_stat, scipy_result.statistic, rtol=1e-6)
+        np.testing.assert_allclose(pdex_pval, scipy_result.pvalue, rtol=1e-6)
 
-
-def test_dex_polars_output():
-    adata = build_random_anndata()
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        as_polars=True,
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
-    assert isinstance(results, pl.DataFrame)
-
-
-def test_zeroed_matrix():
-    adata = build_random_anndata()
-    adata.X = np.zeros_like(adata.X)
-    results = parallel_differential_expression(
-        adata,
-        reference=CONTROL_VAR,
-        groupby_key=PERT_COL,
-        metric="wilcoxon",
-    )
-    assert results.shape[0] == N_GENES * N_PERTS
-    assert isinstance(results, pd.DataFrame)
-    assert np.all(results["p_value"] == 1.0)
-    assert np.all(results["fdr"] == 1.0)
-
-
-def _sort_results(df: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
-    if isinstance(df, pl.DataFrame):
-        df = df.to_pandas()
-    return df.sort_values(["target", "feature"]).reset_index(drop=True)
-
-
-def test_low_memory_integer_data_matches_standard_results():
-    adata = build_small_anndata()
-
-    baseline = _sort_results(
-        parallel_differential_expression(
-            adata,
-            reference=CONTROL_VAR,
-            groupby_key=PERT_COL,
-            num_workers=1,
-            low_memory=False,
+    def test_custom_reference(self, small_adata):
+        """Using group A as reference instead of default."""
+        result = pdex(
+            small_adata, groupby="guide", mode="ref", is_log1p=False, reference="A"
         )
-    )
+        assert isinstance(result, pl.DataFrame)
+        assert result.shape[0] > 0
 
-    chunked = _sort_results(
-        parallel_differential_expression(
-            adata,
-            reference=CONTROL_VAR,
-            groupby_key=PERT_COL,
-            num_workers=1,
-            num_threads=2,
-            low_memory=True,
-            gene_chunk_size=2,
-            show_progress=False,
+    def test_as_pandas(self, small_adata):
+        import pandas as pd
+
+        result = pdex(
+            small_adata, groupby="guide", mode="ref", is_log1p=False, as_pandas=True
         )
-    )
+        assert isinstance(result, pd.DataFrame)
+        assert set(result.columns) == EXPECTED_COLUMNS
 
-    pd.testing.assert_series_equal(
-        baseline["p_value"],
-        chunked["p_value"],
-        check_exact=False,
-        rtol=0,
-        atol=5e-2,
-    )
-    pd.testing.assert_series_equal(baseline["statistic"], chunked["statistic"])
+    def test_unexpected_kwargs_warns(self, small_adata):
+        with pytest.warns(UserWarning, match="typo_arg"):
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="ref",
+                is_log1p=False,
+                typo_arg="oops",
+            )
 
 
-def test_low_memory_float_data_uses_sorting_kernel():
-    adata = build_small_anndata()
-    adata_float = adata.copy()
-    adata_float.X = np.log1p(np.asarray(adata_float.X))  # type: ignore[assignment]
+class TestPdexRefSparse:
+    """Tests for pdex with sparse CSR input."""
 
-    baseline = _sort_results(
-        parallel_differential_expression(
-            adata_float,
-            reference=CONTROL_VAR,
-            groupby_key=PERT_COL,
-            num_workers=1,
-            low_memory=False,
+    def test_returns_dataframe(self, small_adata_sparse):
+        result = pdex(small_adata_sparse, groupby="guide", mode="ref", is_log1p=False)
+        assert isinstance(result, pl.DataFrame)
+
+    def test_output_columns(self, small_adata_sparse):
+        result = pdex(small_adata_sparse, groupby="guide", mode="ref", is_log1p=False)
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_sparse_dense_agreement(self, small_adata, small_adata_sparse):
+        """Sparse and dense inputs should produce the same results."""
+        dense_result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        sparse_result = pdex(
+            small_adata_sparse, groupby="guide", mode="ref", is_log1p=False
         )
-    )
 
-    chunked = _sort_results(
-        parallel_differential_expression(
-            adata_float,
-            reference=CONTROL_VAR,
-            groupby_key=PERT_COL,
-            num_workers=1,
-            num_threads=2,
-            low_memory=True,
-            gene_chunk_size=2,
-            show_progress=False,
+        assert dense_result.shape == sparse_result.shape
+
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+
+class TestPdexAllMode:
+    """Tests for pdex(..., mode='all') — 1 vs Rest."""
+
+    def test_returns_dataframe(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        assert isinstance(result, pl.DataFrame)
+
+    def test_output_columns(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_output_shape(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        n_genes = small_adata.n_vars
+        n_groups = len(small_adata.obs["guide"].unique())
+        # Every group gets compared against all others
+        assert result.shape[0] == n_groups * n_genes
+
+    def test_group_names_present(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        result_groups = set(result["target"].unique().to_list())
+        expected_groups = set(small_adata.obs["guide"].unique())
+        assert result_groups == expected_groups
+
+    def test_membership_counts(self, small_adata):
+        """Each group's membership should match obs, and rest should be total - group."""
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        n_total = small_adata.n_obs
+        for group_name in small_adata.obs["guide"].unique():
+            expected_group = (small_adata.obs["guide"] == group_name).sum()
+            expected_rest = n_total - expected_group
+            group_rows = result.filter(pl.col("target") == group_name)
+            assert group_rows["target_membership"].unique().to_list() == [
+                expected_group
+            ]
+            assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
+
+    def test_pvalues_in_range(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()
+
+    def test_fdr_in_range(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        assert (result["fdr"] >= 0).all()
+        assert (result["fdr"] <= 1).all()
+
+    def test_fold_change_sign(self, small_adata):
+        """Group B was boosted the most, so its fold change vs rest should be positive."""
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        group_b_rows = result.filter(pl.col("target") == "B")
+        mean_fc = group_b_rows["fold_change"].mean()
+        assert mean_fc > 0  # type: ignore
+
+    def test_statistics_against_scipy(self, small_adata):
+        """Verify MWU statistics match scipy for group A gene 0 (1 vs rest)."""
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+
+        X = small_adata.X
+        obs = small_adata.obs
+        group_a_mask = (obs["guide"] == "A").values
+        rest_mask = ~group_a_mask
+
+        group_vals = X[group_a_mask, 0]
+        rest_vals = X[rest_mask, 0]
+
+        scipy_result = stats.mannwhitneyu(
+            group_vals, rest_vals, alternative="two-sided", method="asymptotic"
         )
-    )
 
-    # Allow small numerical differences between scipy and numba implementations
-    pd.testing.assert_series_equal(
-        baseline["p_value"],
-        chunked["p_value"],
-        check_exact=False,
-        rtol=0,
-        atol=5e-3,
-    )
-    pd.testing.assert_series_equal(
-        baseline["statistic"],
-        chunked["statistic"],
-        check_exact=False,
-        rtol=1e-6,
-        atol=1e-6,
-    )
+        pdex_group_a = result.filter(pl.col("target") == "A")
+        pdex_pval = pdex_group_a["p_value"][0]
+        pdex_stat = pdex_group_a["statistic"][0]
+
+        np.testing.assert_allclose(pdex_stat, scipy_result.statistic, rtol=1e-6)
+        np.testing.assert_allclose(pdex_pval, scipy_result.pvalue, rtol=1e-6)
+
+    def test_sparse_returns_dataframe(self, small_adata_sparse):
+        result = pdex(small_adata_sparse, groupby="guide", mode="all", is_log1p=False)
+        assert isinstance(result, pl.DataFrame)
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_sparse_dense_agreement(self, small_adata, small_adata_sparse):
+        """Sparse and dense 1vRest results should match."""
+        dense_result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        sparse_result = pdex(
+            small_adata_sparse, groupby="guide", mode="all", is_log1p=False
+        )
+
+        assert dense_result.shape == sparse_result.shape
+
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+
+class TestPdexOnTargetMode:
+    """Tests for pdex(..., mode='on_target')."""
+
+    def test_returns_dataframe(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        assert isinstance(result, pl.DataFrame)
+
+    def test_output_columns(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_output_shape(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        n_groups = on_target_adata.obs["guide"].nunique() - 1  # control excluded
+        assert result.shape[0] == n_groups
+
+    def test_gene_column_values(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        gene_map = {"A": "gene_1", "B": "gene_2"}
+        for row in result.iter_rows(named=True):
+            assert row["feature"] == gene_map[row["target"]]
+
+    def test_membership_counts(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        for group_name in result["target"].to_list():
+            expected_count = (on_target_adata.obs["guide"] == group_name).sum()
+            row = result.filter(pl.col("target") == group_name)
+            assert row["target_membership"][0] == expected_count
+
+    def test_ref_membership_is_constant(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        ref_count = (on_target_adata.obs["guide"] == DEFAULT_REFERENCE).sum()
+        assert result["ref_membership"].unique().to_list() == [ref_count]
+
+    def test_pvalues_in_range(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()
+
+    def test_fdr_in_range(self, on_target_adata):
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        assert (result["fdr"] >= 0).all()
+        assert (result["fdr"] <= 1).all()
+
+    def test_statistics_against_scipy(self, on_target_adata):
+        """Verify MWU statistic matches scipy for group A at its target gene (gene_1)."""
+        result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+
+        X = on_target_adata.X
+        obs = on_target_adata.obs
+        ntc_mask = (obs["guide"] == DEFAULT_REFERENCE).values
+        group_a_mask = (obs["guide"] == "A").values
+        gene_idx = list(on_target_adata.var_names).index("gene_1")
+
+        ntc_vals = np.asarray(X[ntc_mask, gene_idx]).ravel()
+        group_vals = np.asarray(X[group_a_mask, gene_idx]).ravel()
+
+        scipy_result = stats.mannwhitneyu(
+            group_vals, ntc_vals, alternative="two-sided", method="asymptotic"
+        )
+
+        row = result.filter(pl.col("target") == "A")
+        np.testing.assert_allclose(
+            row["statistic"][0], scipy_result.statistic, rtol=1e-6
+        )
+        np.testing.assert_allclose(row["p_value"][0], scipy_result.pvalue, rtol=1e-6)
+
+    def test_sparse_dense_agreement(self, on_target_adata, on_target_adata_sparse):
+        dense_result = pdex(
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+        sparse_result = pdex(
+            on_target_adata_sparse,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+        )
+
+        assert dense_result.shape == sparse_result.shape
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+
+class TestPdexOnTargetValidation:
+    def test_missing_gene_col_kwarg(self, on_target_adata):
+        with pytest.raises(ValueError, match="gene_col"):
+            pdex(on_target_adata, groupby="guide", mode="on_target", is_log1p=False)
+
+    def test_missing_gene_col_column(self, small_adata):
+        with pytest.raises(ValueError, match="Missing column"):
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="on_target",
+                gene_col="nonexistent",
+                is_log1p=False,
+            )
+
+    def test_ambiguous_group_gene_mapping(self, on_target_adata):
+        """A group with two different target_gene values should raise."""
+        adata = on_target_adata.copy()
+        # Give group A two different target genes
+        a_indices = adata.obs[adata.obs["guide"] == "A"].index
+        adata.obs.loc[a_indices[0], "target_gene"] = "gene_3"
+        with pytest.raises(ValueError, match="map to multiple genes"):
+            pdex(
+                adata,
+                groupby="guide",
+                mode="on_target",
+                gene_col="target_gene",
+                is_log1p=False,
+            )
+
+    def test_unknown_gene_name_warns_and_skips(self, on_target_adata):
+        """A target gene not in var_names should warn and skip that group."""
+        adata = on_target_adata.copy()
+        adata.obs.loc[adata.obs["guide"] == "A", "target_gene"] = "not_a_real_gene"
+        with pytest.warns(UserWarning, match="not_a_real_gene"):
+            result = pdex(
+                adata,
+                groupby="guide",
+                mode="on_target",
+                gene_col="target_gene",
+                is_log1p=False,
+            )
+        assert "A" not in result["target"].to_list()
+        assert (
+            result.shape[0] == adata.obs["guide"].nunique() - 2
+        )  # control + A excluded
+
+
+class TestPdexValidation:
+    def test_invalid_mode(self, small_adata):
+        with pytest.raises(ValueError, match="Invalid mode"):
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="invalid",  # type: ignore
+                is_log1p=False,
+            )
+
+    def test_missing_groupby(self, small_adata):
+        with pytest.raises(ValueError, match="Missing column"):
+            pdex(small_adata, groupby="nonexistent", mode="ref", is_log1p=False)
+
+    def test_missing_reference(self, small_adata):
+        with pytest.raises(ValueError, match="Missing reference"):
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="ref",
+                is_log1p=False,
+                reference="does_not_exist",
+            )
+
+
+class TestPdexGeometricMean:
+    """Tests for is_log1p / geometric_mean behaviour."""
+
+    def test_autodetect_warns(self, small_adata, caplog):
+        """Omitting is_log1p should emit a log warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="pdex"):
+            pdex(small_adata, groupby="guide", mode="ref", geometric_mean=False)
+        assert any("is_log1p not specified" in r.message for r in caplog.records)
+
+    def test_arithmetic_mean_matches_original(self, small_adata):
+        """geometric_mean=False, is_log1p=False: target_mean = plain arithmetic mean of raw counts."""
+        result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            geometric_mean=False,
+        )
+        X = small_adata.X
+        obs = small_adata.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(X[group_mask, gene_idx].mean())
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_arithmetic_mean_is_log1p_true_returns_natural_space(
+        self, small_adata_log1p
+    ):
+        """geometric_mean=False, is_log1p=True: target_mean = mean(expm1(log1p_data)),
+        i.e. back-transform first then average."""
+        result = pdex(
+            small_adata_log1p,
+            groupby="guide",
+            mode="ref",
+            is_log1p=True,
+            geometric_mean=False,
+        )
+        X = small_adata_log1p.X
+        obs = small_adata_log1p.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(np.expm1(X[group_mask, gene_idx]).mean())
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_geometric_mean_is_log1p_true(self, small_adata_log1p):
+        """geometric_mean=True, is_log1p=True: target_mean = expm1(mean(log1p_data))."""
+        result = pdex(
+            small_adata_log1p,
+            groupby="guide",
+            mode="ref",
+            is_log1p=True,
+            geometric_mean=True,
+        )
+        X = small_adata_log1p.X
+        obs = small_adata_log1p.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(np.expm1(X[group_mask, gene_idx].mean()))
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_geometric_mean_is_log1p_false(self, small_adata):
+        """geometric_mean=True, is_log1p=False: target_mean = expm1(mean(log1p(counts)))."""
+        result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            geometric_mean=True,
+        )
+        X = small_adata.X
+        obs = small_adata.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(np.expm1(np.log1p(X[group_mask, gene_idx]).mean()))
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_both_log1p_paths_agree(self, small_adata, small_adata_log1p):
+        """pdex on raw counts with is_log1p=False and on log1p counts with is_log1p=True
+        should yield identical results across all output columns.
+
+        Pseudobulk means back-transform to the same count space, so fold_change and
+        percent_change must match. The MWU statistic and p_value operate on the raw
+        cell-level values (which differ between the two inputs), so they are NOT
+        expected to match — only the pseudobulk-derived columns are tested here.
+        """
+        raw_result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            geometric_mean=True,
+        )
+        log_result = pdex(
+            small_adata_log1p,
+            groupby="guide",
+            mode="ref",
+            is_log1p=True,
+            geometric_mean=True,
+        )
+        for col in ["target_mean", "ref_mean", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                raw_result[col].to_numpy(),
+                log_result[col].to_numpy(),
+                rtol=1e-10,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+    def test_all_mode_geometric_mean(self, small_adata):
+        """geometric_mean=True works in mode='all'."""
+        result = pdex(
+            small_adata,
+            groupby="guide",
+            mode="all",
+            is_log1p=False,
+            geometric_mean=True,
+        )
+        assert isinstance(result, pl.DataFrame)
+        X = small_adata.X
+        obs = small_adata.obs
+        group_mask = (obs["guide"] == "B").values
+        gene_idx = 1
+        expected_mean = float(np.expm1(np.log1p(X[group_mask, gene_idx]).mean()))
+        row = result.filter((pl.col("target") == "B") & (pl.col("feature") == "gene_1"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+
+class TestPdexBacked:
+    """Backed AnnData should produce the same results as in-memory."""
+
+    def test_ref_mode_backed_matches_inmemory(self, small_adata, small_adata_backed):
+        inmem = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        backed = pdex(small_adata_backed, groupby="guide", mode="ref", is_log1p=False)
+        assert inmem.shape == backed.shape
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                inmem[col].to_numpy(),
+                backed[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+    def test_all_mode_backed_matches_inmemory(self, small_adata, small_adata_backed):
+        inmem = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        backed = pdex(small_adata_backed, groupby="guide", mode="all", is_log1p=False)
+        assert inmem.shape == backed.shape
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                inmem[col].to_numpy(),
+                backed[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
