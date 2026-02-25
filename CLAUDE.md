@@ -83,10 +83,10 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `percent_change`    | float | (target_mean - ref_mean) / ref_mean — computed from pseudobulk means  |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |
 | `statistic`         | float | Mann-Whitney U statistic                                              |
-| `fdr`               | float | FDR-corrected p-value, applied per-group across genes                 |
+| `fdr`               | float | FDR-corrected p-value, applied per-group across genes. For `on_target` mode, applied across all groups.                 |
 
 `target_mean` and `ref_mean` are always in natural (count) space regardless of `is_log1p` or `geometric_mean`.
-FDR is corrected within each group (across genes), not globally across all (group, gene) pairs.
+FDR is corrected within each group (across genes) for `ref` and `all` modes. For `on_target` mode, it is applied across all resulting p-values.
 
 ### Public API (`__all__`)
 
