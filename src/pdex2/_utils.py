@@ -1,6 +1,9 @@
+import logging
 import os
 
 import numba
+
+log = logging.getLogger(__name__)
 
 
 def set_numba_threadpool(threads: int = 0):
@@ -16,4 +19,5 @@ def set_numba_threadpool(threads: int = 0):
     else:
         threads = min(threads, available_threads)
 
+    log.info("Using %d Numba threads (available: %d)", threads, available_threads)
     numba.set_num_threads(threads)

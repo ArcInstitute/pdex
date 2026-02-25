@@ -1,3 +1,4 @@
+import logging
 import warnings
 from typing import Literal
 
@@ -14,6 +15,8 @@ from tqdm import tqdm
 from pdex2._math import bulk_matrix, fold_change, mwu, percent_change
 
 from ._utils import set_numba_threadpool
+
+log = logging.getLogger(__name__)
 
 PDEX_MODES = Literal["ref", "all", "on_target"]
 DEFAULT_REFERENCE = "non-targeting"
@@ -75,12 +78,12 @@ def _build_group_gene_map(
             continue
         group_gene_map[group] = var_names.get_loc(gene_name)
     if skipped:
-        warnings.warn(
+        msg = (
             f"Skipping {len(skipped)} group(s) with unresolvable target genes: "
-            + ", ".join(skipped),
-            UserWarning,
-            stacklevel=3,
+            + ", ".join(skipped)
         )
+        log.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=3)
     return group_gene_map
 
 
@@ -120,32 +123,33 @@ def pdex(
     threads: int = 0,
     **kwargs,
 ) -> pl.DataFrame:
+    log.info(
+        "pdex called: mode=%s, groupby=%r, n_obs=%d, n_vars=%d",
+        mode,
+        groupby,
+        adata.n_obs,
+        adata.n_vars,
+    )
+
     # Set the global threadpool for numba
     set_numba_threadpool(threads)
 
     _validate_groupby(adata.obs, groupby)
 
     if mode == "ref":
-        return _pdex_ref(
-            adata,
-            groupby=groupby,
-            reference=kwargs.pop("reference", DEFAULT_REFERENCE),
-        )
+        reference = kwargs.pop("reference", DEFAULT_REFERENCE)
+        log.info("Reference group: %r", reference)
+        return _pdex_ref(adata, groupby=groupby, reference=reference)
     elif mode == "all":
-        return _pdex_all(
-            adata,
-            groupby=groupby,
-            **kwargs,
-        )
+        return _pdex_all(adata, groupby=groupby, **kwargs)
     elif mode == "on_target":
         gene_col = kwargs.pop("gene_col", None)
         if gene_col is None:
             raise ValueError("'gene_col' is required for mode='on_target'")
+        reference = kwargs.pop("reference", DEFAULT_REFERENCE)
+        log.info("on_target: gene_col=%r, reference=%r", gene_col, reference)
         return _pdex_on_target(
-            adata,
-            groupby=groupby,
-            gene_col=gene_col,
-            reference=kwargs.pop("reference", DEFAULT_REFERENCE),
+            adata, groupby=groupby, gene_col=gene_col, reference=reference
         )
     else:
         raise ValueError(f"Invalid mode: {mode}")
@@ -157,9 +161,11 @@ def _pdex_ref(
     reference: str = DEFAULT_REFERENCE,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
+    log.info("Found %d groups (excluding reference)", len(unique_groups) - 1)
 
     ref_index = _identify_reference_index(unique_groups, reference)
     ref_mask = np.flatnonzero(unique_group_indices == ref_index)
+    log.info("Reference %r: %d cells", reference, ref_mask.size)
 
     ref_matrix = _isolate_matrix(adata, ref_mask)
     ref_bulk = bulk_matrix(ref_matrix)
@@ -215,6 +221,7 @@ def _pdex_all(
     **kwargs,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
+    log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
 
     results = []
     for group_idx in tqdm(
@@ -272,6 +279,12 @@ def _pdex_on_target(
     ref_index = _identify_reference_index(unique_groups, reference)
     ref_mask = np.flatnonzero(unique_group_indices == ref_index)
     ref_membership = ref_mask.size
+    log.info(
+        "on_target: %d groups, reference %r has %d cells",
+        len(unique_groups) - 1,
+        reference,
+        ref_membership,
+    )
 
     group_gene_map = _build_group_gene_map(
         adata.obs, groupby, gene_col, unique_groups, adata.var_names
