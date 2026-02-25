@@ -61,22 +61,47 @@ def _build_group_gene_map(
         raise ValueError(
             f"Missing column: {gene_col}. Available: {', '.join(obs.columns)}"
         )
-    group_gene_map: dict[str, int] = {}
+    if groupby not in obs.columns:
+        raise ValueError(
+            f"Missing column: {groupby}. Available: {', '.join(obs.columns)}"
+        )
+
+    # One-pass: drop NaN gene entries, then get unique (group, gene) pairs
+    mapping = (
+        pd.DataFrame(obs[[groupby, gene_col]])
+        .dropna(subset=[gene_col])
+        .drop_duplicates()
+    )
+
+    # Detect any group mapped to more than one gene
+    counts = mapping.groupby(groupby, sort=False)[gene_col].count()
+    multi = counts[counts > 1]
+    if not multi.empty:
+        details = "; ".join(
+            f"'{g}' -> {list(mapping.loc[mapping[groupby] == g, gene_col])}"
+            for g in multi.index
+        )
+        raise ValueError(
+            f"{len(multi)} group(s) map to multiple genes in '{gene_col}': {details}"
+        )
+
+    # Build lookup restricted to unique_groups
+    unique_groups_set = set(unique_groups)
+    mapping = mapping[mapping[groupby].isin(unique_groups_set)]
+    group_to_gene: dict[str, str] = dict(zip(mapping[groupby], mapping[gene_col]))
+
     skipped: list[str] = []
+    group_gene_map: dict[str, int] = {}
     for group in unique_groups:
-        genes = pd.Series(obs.loc[obs[groupby] == group, gene_col]).dropna().unique()  # type: ignore[union-attr]
-        if len(genes) > 1:
-            raise ValueError(
-                f"Group '{group}' maps to {len(genes)} genes in '{gene_col}': {list(genes)}"
-            )
-        if len(genes) == 0:
+        if group not in group_to_gene:
             skipped.append(f"'{group}' (no target gene)")
             continue
-        gene_name = genes[0]
+        gene_name = group_to_gene[group]
         if gene_name not in var_names:
             skipped.append(f"'{group}' (gene '{gene_name}' not in var_names)")
             continue
         group_gene_map[group] = var_names.get_loc(gene_name)
+
     if skipped:
         msg = (
             f"Skipping {len(skipped)} group(s) with unresolvable target genes: "

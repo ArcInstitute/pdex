@@ -356,7 +356,7 @@ class TestPdexOnTargetValidation:
         # Give group A two different target genes
         a_indices = adata.obs[adata.obs["guide"] == "A"].index
         adata.obs.loc[a_indices[0], "target_gene"] = "gene_3"
-        with pytest.raises(ValueError, match="maps to 2 genes"):
+        with pytest.raises(ValueError, match="map to multiple genes"):
             pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
 
     def test_unknown_gene_name_warns_and_skips(self, on_target_adata):
