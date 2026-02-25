@@ -99,4 +99,4 @@ Returns a Polars DataFrame (or pandas if `as_pandas=True`) with one row per (gro
 | `percent_change`    | (target_mean - ref_mean) / ref_mean                |
 | `p_value`           | Mann-Whitney U p-value                             |
 | `statistic`         | Mann-Whitney U statistic                           |
-| `fdr`               | FDR-corrected p-value (per-group, across genes)    |
+| `fdr`               | FDR-corrected p-value (per-group, across genes). For `on_target` mode, this is applied across all groups.    |
