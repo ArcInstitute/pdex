@@ -101,16 +101,18 @@ def _pdex_ref(
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
 
-    ntc_index = _identify_reference_index(unique_groups, reference)
-    ntc_mask = np.flatnonzero(unique_group_indices == ntc_index)
+    ref_index = _identify_reference_index(unique_groups, reference)
+    ref_mask = np.flatnonzero(unique_group_indices == ref_index)
 
-    ntc_matrix = _isolate_matrix(adata, ntc_mask)
-    ntc_bulk = bulk_matrix(ntc_matrix)
-    ntc_membership = ntc_mask.size
-    ntc_ref = (
-        sparse_column_index(ntc_matrix)
-        if isinstance(ntc_matrix, csr_matrix)
-        else ntc_matrix
+    ref_matrix = _isolate_matrix(adata, ref_mask)
+    ref_bulk = bulk_matrix(ref_matrix)
+    ref_membership = ref_mask.size
+
+    # Either sparse_column_index or ref_matrix
+    ref_data = (
+        sparse_column_index(ref_matrix)
+        if isinstance(ref_matrix, csr_matrix)
+        else ref_matrix
     )
 
     results = []
@@ -123,9 +125,9 @@ def _pdex_ref(
         group_matrix = _isolate_matrix(adata, group_mask)
         group_bulk = bulk_matrix(group_matrix)
 
-        fc = fold_change(group_bulk, ntc_bulk)
-        pc = percent_change(group_bulk, ntc_bulk)
-        mwu_result = mwu(group_matrix, ntc_ref)
+        fc = fold_change(group_bulk, ref_bulk)
+        pc = percent_change(group_bulk, ref_bulk)
+        mwu_result = mwu(group_matrix, ref_data)
 
         mwu_statistic = mwu_result.statistic
         mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
@@ -136,9 +138,9 @@ def _pdex_ref(
                 {
                     "group": group_name,
                     "group_mean": np.asarray(group_bulk).ravel(),
-                    "ref_mean": np.asarray(ntc_bulk).ravel(),
+                    "ref_mean": np.asarray(ref_bulk).ravel(),
                     "group_membership": group_mask.size,
-                    "ref_membership": ntc_membership,
+                    "ref_membership": ref_membership,
                     "fold_change": fc,
                     "percent_change": pc,
                     "p_value": mwu_pvalue,
