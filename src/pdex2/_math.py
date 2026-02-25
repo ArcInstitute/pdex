@@ -44,7 +44,9 @@ def _expm1_vec_mean(matrix: np.ndarray) -> np.ndarray:
     return result
 
 
-def bulk_matrix_arithmetic(matrix: np.ndarray | csr_matrix, is_log1p: bool, axis=0) -> np.ndarray:
+def bulk_matrix_arithmetic(
+    matrix: np.ndarray | csr_matrix, is_log1p: bool, axis=0
+) -> np.ndarray:
     """Arithmetic mean across cells (axis=0), always returned in natural (count) space.
 
     When is_log1p=True the data is back-transformed via expm1 before taking the
