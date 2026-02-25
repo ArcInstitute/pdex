@@ -617,3 +617,31 @@ class TestPdexGeometricMean:
         expected_mean = float(np.expm1(np.log1p(X[group_mask, gene_idx]).mean()))
         row = result.filter((pl.col("target") == "B") & (pl.col("feature") == "gene_1"))
         np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+
+class TestPdexBacked:
+    """Backed AnnData should produce the same results as in-memory."""
+
+    def test_ref_mode_backed_matches_inmemory(self, small_adata, small_adata_backed):
+        inmem = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        backed = pdex(small_adata_backed, groupby="guide", mode="ref", is_log1p=False)
+        assert inmem.shape == backed.shape
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                inmem[col].to_numpy(),
+                backed[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+    def test_all_mode_backed_matches_inmemory(self, small_adata, small_adata_backed):
+        inmem = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        backed = pdex(small_adata_backed, groupby="guide", mode="all", is_log1p=False)
+        assert inmem.shape == backed.shape
+        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                inmem[col].to_numpy(),
+                backed[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )

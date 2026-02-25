@@ -70,3 +70,11 @@ def small_adata_log1p(small_adata):
     adata = small_adata.copy()
     adata.X = np.log1p(adata.X)
     return adata
+
+
+@pytest.fixture
+def small_adata_backed(small_adata, tmp_path):
+    """small_adata written to disk and re-opened in backed mode."""
+    path = tmp_path / "test.h5ad"
+    small_adata.write_h5ad(path)
+    return ad.read_h5ad(path, backed="r")
