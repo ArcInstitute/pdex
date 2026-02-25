@@ -26,28 +26,28 @@ class TestPdexRefMode:
     """Tests for pdex(..., mode='ref')."""
 
     def test_returns_dataframe(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         assert isinstance(result, pl.DataFrame)
 
     def test_output_columns(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         assert set(result.columns) == EXPECTED_COLUMNS
 
     def test_output_shape(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         n_genes = small_adata.n_vars
         n_groups = len(small_adata.obs["guide"].unique())
         # All groups (including reference) get a row per gene
         assert result.shape[0] == n_groups * n_genes
 
     def test_group_names_present(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         result_groups = set(result["target"].unique().to_list())
         expected_groups = set(small_adata.obs["guide"].unique())
         assert result_groups == expected_groups
 
     def test_membership_counts(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         for group_name in small_adata.obs["guide"].unique():
             expected_count = (small_adata.obs["guide"] == group_name).sum()
             group_rows = result.filter(pl.col("target") == group_name)
@@ -55,24 +55,24 @@ class TestPdexRefMode:
             assert actual_counts == [expected_count]
 
     def test_ref_membership_is_constant(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         ref_count = (small_adata.obs["guide"] == DEFAULT_REFERENCE).sum()
         assert result["ref_membership"].unique().to_list() == [ref_count]
 
     def test_pvalues_in_range(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         assert (result["p_value"] >= 0).all()
         assert (result["p_value"] <= 1).all()
 
     def test_fdr_in_range(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         assert (result["fdr"] >= 0).all()
         assert (result["fdr"] <= 1).all()
 
     def test_fold_change_sign(self, small_adata):
         """Groups A and B have higher expression than non-targeting,
         so fold change should be positive."""
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         for group_name in ["A", "B"]:
             group_rows = result.filter(pl.col("target") == group_name)
             # Mean fold change should be positive since we boosted these groups
@@ -81,7 +81,7 @@ class TestPdexRefMode:
 
     def test_statistics_against_scipy(self, small_adata):
         """Verify MWU statistics match scipy for at least one group/gene pair."""
-        result = pdex(small_adata, groupby="guide", mode="ref")
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
 
         X = small_adata.X
         obs = small_adata.obs
@@ -105,7 +105,9 @@ class TestPdexRefMode:
 
     def test_custom_reference(self, small_adata):
         """Using group A as reference instead of default."""
-        result = pdex(small_adata, groupby="guide", mode="ref", reference="A")
+        result = pdex(
+            small_adata, groupby="guide", mode="ref", is_log1p=False, reference="A"
+        )
         assert isinstance(result, pl.DataFrame)
         assert result.shape[0] > 0
 
@@ -114,17 +116,19 @@ class TestPdexRefSparse:
     """Tests for pdex with sparse CSR input."""
 
     def test_returns_dataframe(self, small_adata_sparse):
-        result = pdex(small_adata_sparse, groupby="guide", mode="ref")
+        result = pdex(small_adata_sparse, groupby="guide", mode="ref", is_log1p=False)
         assert isinstance(result, pl.DataFrame)
 
     def test_output_columns(self, small_adata_sparse):
-        result = pdex(small_adata_sparse, groupby="guide", mode="ref")
+        result = pdex(small_adata_sparse, groupby="guide", mode="ref", is_log1p=False)
         assert set(result.columns) == EXPECTED_COLUMNS
 
     def test_sparse_dense_agreement(self, small_adata, small_adata_sparse):
         """Sparse and dense inputs should produce the same results."""
-        dense_result = pdex(small_adata, groupby="guide", mode="ref")
-        sparse_result = pdex(small_adata_sparse, groupby="guide", mode="ref")
+        dense_result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        sparse_result = pdex(
+            small_adata_sparse, groupby="guide", mode="ref", is_log1p=False
+        )
 
         assert dense_result.shape == sparse_result.shape
 
@@ -141,29 +145,29 @@ class TestPdexAllMode:
     """Tests for pdex(..., mode='all') — 1 vs Rest."""
 
     def test_returns_dataframe(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         assert isinstance(result, pl.DataFrame)
 
     def test_output_columns(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         assert set(result.columns) == EXPECTED_COLUMNS
 
     def test_output_shape(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         n_genes = small_adata.n_vars
         n_groups = len(small_adata.obs["guide"].unique())
         # Every group gets compared against all others
         assert result.shape[0] == n_groups * n_genes
 
     def test_group_names_present(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         result_groups = set(result["target"].unique().to_list())
         expected_groups = set(small_adata.obs["guide"].unique())
         assert result_groups == expected_groups
 
     def test_membership_counts(self, small_adata):
         """Each group's membership should match obs, and rest should be total - group."""
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         n_total = small_adata.n_obs
         for group_name in small_adata.obs["guide"].unique():
             expected_group = (small_adata.obs["guide"] == group_name).sum()
@@ -175,25 +179,25 @@ class TestPdexAllMode:
             assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
 
     def test_pvalues_in_range(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         assert (result["p_value"] >= 0).all()
         assert (result["p_value"] <= 1).all()
 
     def test_fdr_in_range(self, small_adata):
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         assert (result["fdr"] >= 0).all()
         assert (result["fdr"] <= 1).all()
 
     def test_fold_change_sign(self, small_adata):
         """Group B was boosted the most, so its fold change vs rest should be positive."""
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         group_b_rows = result.filter(pl.col("target") == "B")
         mean_fc = group_b_rows["fold_change"].mean()
         assert mean_fc > 0  # type: ignore
 
     def test_statistics_against_scipy(self, small_adata):
         """Verify MWU statistics match scipy for group A gene 0 (1 vs rest)."""
-        result = pdex(small_adata, groupby="guide", mode="all")
+        result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
 
         X = small_adata.X
         obs = small_adata.obs
@@ -215,14 +219,16 @@ class TestPdexAllMode:
         np.testing.assert_allclose(pdex_pval, scipy_result.pvalue, rtol=1e-6)
 
     def test_sparse_returns_dataframe(self, small_adata_sparse):
-        result = pdex(small_adata_sparse, groupby="guide", mode="all")
+        result = pdex(small_adata_sparse, groupby="guide", mode="all", is_log1p=False)
         assert isinstance(result, pl.DataFrame)
         assert set(result.columns) == EXPECTED_COLUMNS
 
     def test_sparse_dense_agreement(self, small_adata, small_adata_sparse):
         """Sparse and dense 1vRest results should match."""
-        dense_result = pdex(small_adata, groupby="guide", mode="all")
-        sparse_result = pdex(small_adata_sparse, groupby="guide", mode="all")
+        dense_result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
+        sparse_result = pdex(
+            small_adata_sparse, groupby="guide", mode="all", is_log1p=False
+        )
 
         assert dense_result.shape == sparse_result.shape
 
@@ -240,26 +246,42 @@ class TestPdexOnTargetMode:
 
     def test_returns_dataframe(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         assert isinstance(result, pl.DataFrame)
 
     def test_output_columns(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         assert set(result.columns) == EXPECTED_COLUMNS
 
     def test_output_shape(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         n_groups = on_target_adata.obs["guide"].nunique() - 1  # control excluded
         assert result.shape[0] == n_groups
 
     def test_gene_column_values(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         gene_map = {"A": "gene_1", "B": "gene_2"}
         for row in result.iter_rows(named=True):
@@ -267,7 +289,11 @@ class TestPdexOnTargetMode:
 
     def test_membership_counts(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         for group_name in result["target"].to_list():
             expected_count = (on_target_adata.obs["guide"] == group_name).sum()
@@ -276,21 +302,33 @@ class TestPdexOnTargetMode:
 
     def test_ref_membership_is_constant(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         ref_count = (on_target_adata.obs["guide"] == DEFAULT_REFERENCE).sum()
         assert result["ref_membership"].unique().to_list() == [ref_count]
 
     def test_pvalues_in_range(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         assert (result["p_value"] >= 0).all()
         assert (result["p_value"] <= 1).all()
 
     def test_fdr_in_range(self, on_target_adata):
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         assert (result["fdr"] >= 0).all()
         assert (result["fdr"] <= 1).all()
@@ -298,7 +336,11 @@ class TestPdexOnTargetMode:
     def test_statistics_against_scipy(self, on_target_adata):
         """Verify MWU statistic matches scipy for group A at its target gene (gene_1)."""
         result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
 
         X = on_target_adata.X
@@ -322,13 +364,18 @@ class TestPdexOnTargetMode:
 
     def test_sparse_dense_agreement(self, on_target_adata, on_target_adata_sparse):
         dense_result = pdex(
-            on_target_adata, groupby="guide", mode="on_target", gene_col="target_gene"
+            on_target_adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
         )
         sparse_result = pdex(
             on_target_adata_sparse,
             groupby="guide",
             mode="on_target",
             gene_col="target_gene",
+            is_log1p=False,
         )
 
         assert dense_result.shape == sparse_result.shape
@@ -344,11 +391,17 @@ class TestPdexOnTargetMode:
 class TestPdexOnTargetValidation:
     def test_missing_gene_col_kwarg(self, on_target_adata):
         with pytest.raises(ValueError, match="gene_col"):
-            pdex(on_target_adata, groupby="guide", mode="on_target")
+            pdex(on_target_adata, groupby="guide", mode="on_target", is_log1p=False)
 
     def test_missing_gene_col_column(self, small_adata):
         with pytest.raises(ValueError, match="Missing column"):
-            pdex(small_adata, groupby="guide", mode="on_target", gene_col="nonexistent")
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="on_target",
+                gene_col="nonexistent",
+                is_log1p=False,
+            )
 
     def test_ambiguous_group_gene_mapping(self, on_target_adata):
         """A group with two different target_gene values should raise."""
@@ -357,7 +410,13 @@ class TestPdexOnTargetValidation:
         a_indices = adata.obs[adata.obs["guide"] == "A"].index
         adata.obs.loc[a_indices[0], "target_gene"] = "gene_3"
         with pytest.raises(ValueError, match="map to multiple genes"):
-            pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
+            pdex(
+                adata,
+                groupby="guide",
+                mode="on_target",
+                gene_col="target_gene",
+                is_log1p=False,
+            )
 
     def test_unknown_gene_name_warns_and_skips(self, on_target_adata):
         """A target gene not in var_names should warn and skip that group."""
@@ -365,7 +424,11 @@ class TestPdexOnTargetValidation:
         adata.obs.loc[adata.obs["guide"] == "A", "target_gene"] = "not_a_real_gene"
         with pytest.warns(UserWarning, match="not_a_real_gene"):
             result = pdex(
-                adata, groupby="guide", mode="on_target", gene_col="target_gene"
+                adata,
+                groupby="guide",
+                mode="on_target",
+                gene_col="target_gene",
+                is_log1p=False,
             )
         assert "A" not in result["target"].to_list()
         assert (
@@ -380,24 +443,34 @@ class TestPdexValidation:
                 small_adata,
                 groupby="guide",
                 mode="invalid",  # type: ignore
+                is_log1p=False,
             )
 
     def test_missing_groupby(self, small_adata):
         with pytest.raises(ValueError, match="Missing column"):
-            pdex(small_adata, groupby="nonexistent", mode="ref")
+            pdex(small_adata, groupby="nonexistent", mode="ref", is_log1p=False)
 
     def test_missing_reference(self, small_adata):
         with pytest.raises(ValueError, match="Missing reference"):
-            pdex(small_adata, groupby="guide", mode="ref", reference="does_not_exist")
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="ref",
+                is_log1p=False,
+                reference="does_not_exist",
+            )
 
 
 class TestPdexGeometricMean:
     """Tests for is_log1p / geometric_mean behaviour."""
 
-    def test_autodetect_warns(self, small_adata):
-        """Omitting is_log1p should emit a UserWarning."""
-        with pytest.warns(UserWarning, match="is_log1p not specified"):
+    def test_autodetect_warns(self, small_adata, caplog):
+        """Omitting is_log1p should emit a log warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="pdex2"):
             pdex(small_adata, groupby="guide", mode="ref", geometric_mean=False)
+        assert any("is_log1p not specified" in r.message for r in caplog.records)
 
     def test_arithmetic_mean_matches_original(self, small_adata):
         """geometric_mean=False, is_log1p=False should reproduce the original arithmetic-mean result."""
@@ -453,7 +526,13 @@ class TestPdexGeometricMean:
 
     def test_both_log1p_paths_agree(self, small_adata, small_adata_log1p):
         """pdex on raw counts with is_log1p=False and on log1p counts with is_log1p=True
-        should yield identical target_mean values."""
+        should yield identical results across all output columns.
+
+        Pseudobulk means back-transform to the same count space, so fold_change and
+        percent_change must match. The MWU statistic and p_value operate on the raw
+        cell-level values (which differ between the two inputs), so they are NOT
+        expected to match — only the pseudobulk-derived columns are tested here.
+        """
         raw_result = pdex(
             small_adata,
             groupby="guide",
@@ -468,16 +547,13 @@ class TestPdexGeometricMean:
             is_log1p=True,
             geometric_mean=True,
         )
-        np.testing.assert_allclose(
-            raw_result["target_mean"].to_numpy(),
-            log_result["target_mean"].to_numpy(),
-            rtol=1e-10,
-        )
-        np.testing.assert_allclose(
-            raw_result["ref_mean"].to_numpy(),
-            log_result["ref_mean"].to_numpy(),
-            rtol=1e-10,
-        )
+        for col in ["target_mean", "ref_mean", "fold_change", "percent_change"]:
+            np.testing.assert_allclose(
+                raw_result[col].to_numpy(),
+                log_result[col].to_numpy(),
+                rtol=1e-10,
+                err_msg=f"Mismatch in column {col}",
+            )
 
     def test_all_mode_geometric_mean(self, small_adata):
         """geometric_mean=True works in mode='all'."""

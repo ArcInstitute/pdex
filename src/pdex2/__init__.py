@@ -18,6 +18,14 @@ from ._utils import _detect_is_log1p, set_numba_threadpool
 
 log = logging.getLogger(__name__)
 
+# Emit warnings and above to stderr by default so auto-detection messages are
+# always visible without any logging configuration by the caller.
+_handler = logging.StreamHandler()
+_handler.setLevel(logging.WARNING)
+_handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
+log.addHandler(_handler)
+log.setLevel(logging.WARNING)
+
 PDEX_MODES = Literal["ref", "all", "on_target"]
 DEFAULT_REFERENCE = "non-targeting"
 
@@ -166,7 +174,7 @@ def pdex(
         - ``False`` — data is raw/normalised counts; geometric mean is computed
           as ``expm1(mean(log1p(X)))``.
         - ``None`` (default) — auto-detected via a max-value heuristic and a
-          ``UserWarning`` is emitted. Pass explicitly to suppress the warning.
+          log warning is emitted. Pass explicitly to suppress the message.
     geometric_mean:
         If ``True`` (default), the pseudobulk summary is the geometric mean of
         expression values, back-transformed to count space. The exact computation
@@ -218,12 +226,11 @@ def pdex(
     # Resolve is_log1p — auto-detect if not specified
     if is_log1p is None:
         is_log1p = _detect_is_log1p(adata.X)
-        msg = (
-            f"is_log1p not specified; auto-detected {is_log1p}. "
-            "Pass is_log1p explicitly to suppress this warning."
+        log.warning(
+            "is_log1p not specified; auto-detected %s. "
+            "Pass is_log1p explicitly to suppress this message.",
+            is_log1p,
         )
-        log.warning(msg)
-        warnings.warn(msg, UserWarning, stacklevel=2)
 
     log.info("is_log1p=%s, geometric_mean=%s", is_log1p, geometric_mean)
 
