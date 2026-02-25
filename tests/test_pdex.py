@@ -359,12 +359,14 @@ class TestPdexOnTargetValidation:
         with pytest.raises(ValueError, match="maps to 2 genes"):
             pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
 
-    def test_unknown_gene_name(self, on_target_adata):
-        """A target gene not in var_names should raise."""
+    def test_unknown_gene_name_warns_and_skips(self, on_target_adata):
+        """A target gene not in var_names should warn and skip that group."""
         adata = on_target_adata.copy()
         adata.obs.loc[adata.obs["guide"] == "A", "target_gene"] = "not_a_real_gene"
-        with pytest.raises(ValueError, match="not found in var_names"):
-            pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
+        with pytest.warns(UserWarning, match="not_a_real_gene"):
+            result = pdex(adata, groupby="guide", mode="on_target", gene_col="target_gene")
+        assert "A" not in result["group"].to_list()
+        assert result.shape[0] == adata.obs["guide"].nunique() - 1
 
 
 class TestPdexValidation:

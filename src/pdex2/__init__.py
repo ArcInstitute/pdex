@@ -1,3 +1,4 @@
+import warnings
 from typing import Literal
 
 import anndata as ad
@@ -50,26 +51,36 @@ def _build_group_gene_map(
 ) -> dict[str, int]:
     """Returns a mapping of group name -> gene column index in var_names.
 
-    Raises if gene_col is missing, any group maps to multiple genes,
-    or any gene name is not in var_names.
+    Raises if gene_col is missing or any group maps to multiple genes.
+    Skips groups whose target gene is not in var_names, with a warning.
     """
     if gene_col not in obs.columns:
         raise ValueError(
             f"Missing column: {gene_col}. Available: {', '.join(obs.columns)}"
         )
     group_gene_map: dict[str, int] = {}
+    skipped: list[str] = []
     for group in unique_groups:
         genes = pd.Series(obs.loc[obs[groupby] == group, gene_col]).dropna().unique()  # type: ignore[union-attr]
-        if len(genes) != 1:
+        if len(genes) > 1:
             raise ValueError(
                 f"Group '{group}' maps to {len(genes)} genes in '{gene_col}': {list(genes)}"
             )
+        if len(genes) == 0:
+            skipped.append(f"'{group}' (no target gene)")
+            continue
         gene_name = genes[0]
         if gene_name not in var_names:
-            raise ValueError(
-                f"Gene '{gene_name}' (from group '{group}') not found in var_names."
-            )
+            skipped.append(f"'{group}' (gene '{gene_name}' not in var_names)")
+            continue
         group_gene_map[group] = var_names.get_loc(gene_name)
+    if skipped:
+        warnings.warn(
+            f"Skipping {len(skipped)} group(s) with unresolvable target genes: "
+            + ", ".join(skipped),
+            UserWarning,
+            stacklevel=3,
+        )
     return group_gene_map
 
 
@@ -272,6 +283,8 @@ def _pdex_on_target(
         desc="Running parallel differential expression (on-target)",
     ):
         group_name = unique_groups[group_idx]
+        if group_name not in group_gene_map:
+            continue
         gene_idx = group_gene_map[group_name]
 
         group_mask = np.flatnonzero(unique_group_indices == group_idx)
