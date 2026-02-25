@@ -37,18 +37,25 @@ class TestPdexRefMode:
         result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         n_genes = small_adata.n_vars
         n_groups = len(small_adata.obs["guide"].unique())
-        # All groups (including reference) get a row per gene
-        assert result.shape[0] == n_groups * n_genes
+        # Reference group is excluded from the output
+        assert result.shape[0] == (n_groups - 1) * n_genes
+
+    def test_reference_excluded_from_output(self, small_adata):
+        result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
+        assert DEFAULT_REFERENCE not in result["target"].to_list()
 
     def test_group_names_present(self, small_adata):
         result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         result_groups = set(result["target"].unique().to_list())
-        expected_groups = set(small_adata.obs["guide"].unique())
+        expected_groups = set(small_adata.obs["guide"].unique()) - {DEFAULT_REFERENCE}
         assert result_groups == expected_groups
 
     def test_membership_counts(self, small_adata):
         result = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
-        for group_name in small_adata.obs["guide"].unique():
+        non_ref_groups = [
+            g for g in small_adata.obs["guide"].unique() if g != DEFAULT_REFERENCE
+        ]
+        for group_name in non_ref_groups:
             expected_count = (small_adata.obs["guide"] == group_name).sum()
             group_rows = result.filter(pl.col("target") == group_name)
             actual_counts = group_rows["target_membership"].unique().to_list()
@@ -110,6 +117,25 @@ class TestPdexRefMode:
         )
         assert isinstance(result, pl.DataFrame)
         assert result.shape[0] > 0
+
+    def test_as_pandas(self, small_adata):
+        import pandas as pd
+
+        result = pdex(
+            small_adata, groupby="guide", mode="ref", is_log1p=False, as_pandas=True
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_unexpected_kwargs_warns(self, small_adata):
+        with pytest.warns(UserWarning, match="typo_arg"):
+            pdex(
+                small_adata,
+                groupby="guide",
+                mode="ref",
+                is_log1p=False,
+                typo_arg="oops",
+            )
 
 
 class TestPdexRefSparse:
@@ -473,7 +499,7 @@ class TestPdexGeometricMean:
         assert any("is_log1p not specified" in r.message for r in caplog.records)
 
     def test_arithmetic_mean_matches_original(self, small_adata):
-        """geometric_mean=False, is_log1p=False should reproduce the original arithmetic-mean result."""
+        """geometric_mean=False, is_log1p=False: target_mean = plain arithmetic mean of raw counts."""
         result = pdex(
             small_adata,
             groupby="guide",
@@ -481,12 +507,31 @@ class TestPdexGeometricMean:
             is_log1p=False,
             geometric_mean=False,
         )
-        # target_mean for a group should equal plain numpy mean of that group's cells
         X = small_adata.X
         obs = small_adata.obs
         group_mask = (obs["guide"] == "A").values
         gene_idx = 0
         expected_mean = float(X[group_mask, gene_idx].mean())
+        row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
+        np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
+
+    def test_arithmetic_mean_is_log1p_true_returns_natural_space(
+        self, small_adata_log1p
+    ):
+        """geometric_mean=False, is_log1p=True: target_mean = mean(expm1(log1p_data)),
+        i.e. back-transform first then average."""
+        result = pdex(
+            small_adata_log1p,
+            groupby="guide",
+            mode="ref",
+            is_log1p=True,
+            geometric_mean=False,
+        )
+        X = small_adata_log1p.X
+        obs = small_adata_log1p.obs
+        group_mask = (obs["guide"] == "A").values
+        gene_idx = 0
+        expected_mean = float(np.expm1(X[group_mask, gene_idx]).mean())
         row = result.filter((pl.col("target") == "A") & (pl.col("feature") == "gene_0"))
         np.testing.assert_allclose(row["target_mean"][0], expected_mean, rtol=1e-10)
 

@@ -29,6 +29,8 @@ log.setLevel(logging.WARNING)
 PDEX_MODES = Literal["ref", "all", "on_target"]
 DEFAULT_REFERENCE = "non-targeting"
 
+__all__ = ["pdex", "DEFAULT_REFERENCE", "PDEX_MODES"]
+
 
 def _validate_groupby(obs: pd.DataFrame | Dataset2D, groupby: str):
     """Validates the groupby column exists in the observation data."""
@@ -126,7 +128,7 @@ def _isolate_matrix(
     """Returns the matrix of cells that match the mask."""
     if adata.X is None:
         raise ValueError("AnnData object does not have a matrix.")
-    if not mask_y:
+    if mask_y is None:
         return adata.X[mask_x]  # type: ignore
     else:
         return adata.X[mask_x, mask_y]  # type: ignore
@@ -139,8 +141,9 @@ def pdex(
     threads: int = 0,
     is_log1p: bool | None = None,
     geometric_mean: bool = True,
+    as_pandas: bool = False,
     **kwargs,
-) -> pl.DataFrame:
+) -> pl.DataFrame | pd.DataFrame:
     """Run parallel differential expression analysis on single-cell data.
 
     For each group defined by ``groupby``, computes per-gene pseudobulk statistics
@@ -177,12 +180,18 @@ def pdex(
           log warning is emitted. Pass explicitly to suppress the message.
     geometric_mean:
         If ``True`` (default), the pseudobulk summary is the geometric mean of
-        expression values, back-transformed to count space. The exact computation
-        depends on ``is_log1p`` (see above). If ``False``, the arithmetic mean of
-        ``adata.X`` is used directly.
+        expression values, back-transformed to count space via ``expm1``. The
+        exact computation depends on ``is_log1p`` (see above). If ``False``, the
+        arithmetic mean of ``adata.X`` is used instead.
 
-        The reported ``target_mean`` / ``ref_mean`` output columns always reflect
-        the same quantity used to compute ``fold_change`` and ``percent_change``.
+        In both cases ``target_mean`` / ``ref_mean`` are always returned in
+        **natural (count) space**: when ``geometric_mean=False`` and
+        ``is_log1p=True`` the data is back-transformed before averaging
+        (``mean(expm1(X))``) so the output is consistent regardless of input
+        format.
+    as_pandas:
+        If ``True``, return a :class:`pandas.DataFrame` instead of a
+        :class:`polars.DataFrame`. Requires ``pyarrow``.
     **kwargs:
         Mode-specific keyword arguments:
 
@@ -191,24 +200,27 @@ def pdex(
         - ``gene_col`` (str) — required for ``mode="on_target"``. Names a column
           in ``adata.obs`` mapping each group to its target gene in ``adata.var``.
 
+        Unexpected keyword arguments trigger a :class:`UserWarning`.
+
     Returns
     -------
-    pl.DataFrame
+    pl.DataFrame | pd.DataFrame
         One row per (group, feature) pair with columns: ``target``, ``feature``,
         ``target_mean``, ``ref_mean``, ``target_membership``, ``ref_membership``,
         ``fold_change``, ``percent_change``, ``p_value``, ``statistic``, ``fdr``.
 
-        ``target_mean`` and ``ref_mean`` are always in **natural (count) space**,
-        regardless of ``is_log1p``. When ``geometric_mean=True`` they are the
-        geometric mean back-transformed via ``expm1``; when ``geometric_mean=False``
-        they are the arithmetic mean of ``adata.X`` as-is (which will be in
-        log space if ``is_log1p=True``).
+        ``target_mean`` and ``ref_mean`` are always in **natural (count) space**.
 
-        ``fold_change`` is **log2** of the ratio of pseudobulk means
-        (``log2(target_mean / ref_mean)``). ``percent_change`` is the linear
-        relative change (``(target_mean - ref_mean) / ref_mean``).
+        ``fold_change`` and ``percent_change`` are derived from the pseudobulk
+        means (not from the per-cell MWU test inputs): ``fold_change`` is
+        ``log2(target_mean / ref_mean)`` and ``percent_change`` is
+        ``(target_mean - ref_mean) / ref_mean``.  The MWU ``p_value`` and
+        ``statistic`` are computed directly on the per-cell expression vectors.
 
-        For ``mode="on_target"`` each group produces a single row (its target gene only).
+        For ``mode="ref"``, the reference group itself is excluded from the output.
+
+        For ``mode="on_target"`` each group produces a single row (its target gene
+        only).
     """
     log.info(
         "pdex called: mode=%s, groupby=%r, n_obs=%d, n_vars=%d",
@@ -236,8 +248,14 @@ def pdex(
 
     if mode == "ref":
         reference = kwargs.pop("reference", DEFAULT_REFERENCE)
+        if kwargs:
+            warnings.warn(
+                f"Unexpected keyword arguments for mode='ref' (ignored): {', '.join(kwargs)}",
+                UserWarning,
+                stacklevel=2,
+            )
         log.info("Reference group: %r", reference)
-        return _pdex_ref(
+        result = _pdex_ref(
             adata,
             groupby=groupby,
             reference=reference,
@@ -245,20 +263,31 @@ def pdex(
             is_log1p=is_log1p,
         )
     elif mode == "all":
-        return _pdex_all(
+        if kwargs:
+            warnings.warn(
+                f"Unexpected keyword arguments for mode='all' (ignored): {', '.join(kwargs)}",
+                UserWarning,
+                stacklevel=2,
+            )
+        result = _pdex_all(
             adata,
             groupby=groupby,
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
-            **kwargs,
         )
     elif mode == "on_target":
         gene_col = kwargs.pop("gene_col", None)
         if gene_col is None:
             raise ValueError("'gene_col' is required for mode='on_target'")
         reference = kwargs.pop("reference", DEFAULT_REFERENCE)
+        if kwargs:
+            warnings.warn(
+                f"Unexpected keyword arguments for mode='on_target' (ignored): {', '.join(kwargs)}",
+                UserWarning,
+                stacklevel=2,
+            )
         log.info("on_target: gene_col=%r, reference=%r", gene_col, reference)
-        return _pdex_on_target(
+        result = _pdex_on_target(
             adata,
             groupby=groupby,
             gene_col=gene_col,
@@ -268,6 +297,10 @@ def pdex(
         )
     else:
         raise ValueError(f"Invalid mode: {mode}")
+
+    if as_pandas:
+        return result.to_pandas()
+    return result
 
 
 def _pdex_ref(
@@ -302,6 +335,8 @@ def _pdex_ref(
         range(len(unique_groups)),
         desc="Running parallel differential expression (against reference)",
     ):
+        if group_idx == ref_index:
+            continue
         group_name = unique_groups[group_idx]
         group_mask = np.flatnonzero(unique_group_indices == group_idx)
         group_matrix = _isolate_matrix(adata, group_mask)
@@ -351,7 +386,7 @@ def _pdex_all(
     results = []
     for group_idx in tqdm(
         range(len(unique_groups)),
-        desc="Running parallel differential expression (1 v Rest",
+        desc="Running parallel differential expression (1 vs Rest)",
     ):
         group_name = unique_groups[group_idx]
 
