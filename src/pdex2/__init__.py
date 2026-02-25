@@ -226,11 +226,11 @@ def _pdex_ref(
         results.append(
             pl.DataFrame(
                 {
-                    "group": group_name,
+                    "target": group_name,
                     "feature": feature_names,
-                    "group_mean": np.asarray(group_bulk).ravel(),
+                    "target_mean": np.asarray(group_bulk).ravel(),
                     "ref_mean": np.asarray(ref_bulk).ravel(),
-                    "group_membership": group_mask.size,
+                    "target_membership": group_mask.size,
                     "ref_membership": ref_membership,
                     "fold_change": fc,
                     "percent_change": pc,
@@ -282,11 +282,11 @@ def _pdex_all(
         results.append(
             pl.DataFrame(
                 {
-                    "group": group_name,
+                    "target": group_name,
                     "feature": feature_names,
-                    "group_mean": np.asarray(group_bulk).ravel(),
+                    "target_mean": np.asarray(group_bulk).ravel(),
                     "ref_mean": np.asarray(rest_bulk).ravel(),
-                    "group_membership": group_mask.size,
+                    "target_membership": group_mask.size,
                     "ref_membership": rest_mask.size,
                     "fold_change": fc,
                     "percent_change": pc,
@@ -345,11 +345,11 @@ def _pdex_on_target(
         group_col = np.asarray(group_col).reshape(-1, 1)
         ref_col = np.asarray(ref_col).reshape(-1, 1)
 
-        group_mean = float(group_col.mean())
+        target_mean = float(group_col.mean())
         ref_mean = float(ref_col.mean())
 
-        fc = float(fold_change(np.array([group_mean]), np.array([ref_mean]))[0])
-        pc = float(percent_change(np.array([group_mean]), np.array([ref_mean]))[0])
+        fc = float(fold_change(np.array([target_mean]), np.array([ref_mean]))[0])
+        pc = float(percent_change(np.array([target_mean]), np.array([ref_mean]))[0])
 
         mwu_result = mwu(group_col, ref_col)
         p_value = float(np.clip(np.asarray(mwu_result.pvalue).ravel()[0], 0, 1))
@@ -357,11 +357,11 @@ def _pdex_on_target(
 
         rows.append(
             {
-                "group": group_name,
+                "target": group_name,
                 "feature": adata.var_names[gene_idx],
-                "group_mean": group_mean,
+                "target_mean": target_mean,
                 "ref_mean": ref_mean,
-                "group_membership": group_mask.size,
+                "target_membership": group_mask.size,
                 "ref_membership": ref_membership,
                 "fold_change": fc,
                 "percent_change": pc,

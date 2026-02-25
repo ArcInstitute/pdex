@@ -8,11 +8,11 @@ from scipy import stats
 from pdex2 import DEFAULT_REFERENCE, pdex
 
 EXPECTED_COLUMNS = {
-    "group",
+    "target",
     "feature",
-    "group_mean",
+    "target_mean",
     "ref_mean",
-    "group_membership",
+    "target_membership",
     "ref_membership",
     "fold_change",
     "percent_change",
@@ -42,7 +42,7 @@ class TestPdexRefMode:
 
     def test_group_names_present(self, small_adata):
         result = pdex(small_adata, groupby="guide", mode="ref")
-        result_groups = set(result["group"].unique().to_list())
+        result_groups = set(result["target"].unique().to_list())
         expected_groups = set(small_adata.obs["guide"].unique())
         assert result_groups == expected_groups
 
@@ -50,8 +50,8 @@ class TestPdexRefMode:
         result = pdex(small_adata, groupby="guide", mode="ref")
         for group_name in small_adata.obs["guide"].unique():
             expected_count = (small_adata.obs["guide"] == group_name).sum()
-            group_rows = result.filter(pl.col("group") == group_name)
-            actual_counts = group_rows["group_membership"].unique().to_list()
+            group_rows = result.filter(pl.col("target") == group_name)
+            actual_counts = group_rows["target_membership"].unique().to_list()
             assert actual_counts == [expected_count]
 
     def test_ref_membership_is_constant(self, small_adata):
@@ -74,7 +74,7 @@ class TestPdexRefMode:
         so fold change should be positive."""
         result = pdex(small_adata, groupby="guide", mode="ref")
         for group_name in ["A", "B"]:
-            group_rows = result.filter(pl.col("group") == group_name)
+            group_rows = result.filter(pl.col("target") == group_name)
             # Mean fold change should be positive since we boosted these groups
             mean_fc = group_rows["fold_change"].mean()
             assert mean_fc > 0, f"Expected positive fold change for group {group_name}"  # type: ignore
@@ -96,7 +96,7 @@ class TestPdexRefMode:
             group_vals, ntc_vals, alternative="two-sided", method="asymptotic"
         )
 
-        pdex_group_a = result.filter(pl.col("group") == "A")
+        pdex_group_a = result.filter(pl.col("target") == "A")
         pdex_pval = pdex_group_a["p_value"][0]
         pdex_stat = pdex_group_a["statistic"][0]
 
@@ -157,7 +157,7 @@ class TestPdexAllMode:
 
     def test_group_names_present(self, small_adata):
         result = pdex(small_adata, groupby="guide", mode="all")
-        result_groups = set(result["group"].unique().to_list())
+        result_groups = set(result["target"].unique().to_list())
         expected_groups = set(small_adata.obs["guide"].unique())
         assert result_groups == expected_groups
 
@@ -168,8 +168,8 @@ class TestPdexAllMode:
         for group_name in small_adata.obs["guide"].unique():
             expected_group = (small_adata.obs["guide"] == group_name).sum()
             expected_rest = n_total - expected_group
-            group_rows = result.filter(pl.col("group") == group_name)
-            assert group_rows["group_membership"].unique().to_list() == [expected_group]
+            group_rows = result.filter(pl.col("target") == group_name)
+            assert group_rows["target_membership"].unique().to_list() == [expected_group]
             assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
 
     def test_pvalues_in_range(self, small_adata):
@@ -185,7 +185,7 @@ class TestPdexAllMode:
     def test_fold_change_sign(self, small_adata):
         """Group B was boosted the most, so its fold change vs rest should be positive."""
         result = pdex(small_adata, groupby="guide", mode="all")
-        group_b_rows = result.filter(pl.col("group") == "B")
+        group_b_rows = result.filter(pl.col("target") == "B")
         mean_fc = group_b_rows["fold_change"].mean()
         assert mean_fc > 0  # type: ignore
 
@@ -205,7 +205,7 @@ class TestPdexAllMode:
             group_vals, rest_vals, alternative="two-sided", method="asymptotic"
         )
 
-        pdex_group_a = result.filter(pl.col("group") == "A")
+        pdex_group_a = result.filter(pl.col("target") == "A")
         pdex_pval = pdex_group_a["p_value"][0]
         pdex_stat = pdex_group_a["statistic"][0]
 
@@ -261,7 +261,7 @@ class TestPdexOnTargetMode:
         )
         gene_map = {"non-targeting": "gene_0", "A": "gene_1", "B": "gene_2"}
         for row in result.iter_rows(named=True):
-            assert row["feature"] == gene_map[row["group"]]
+            assert row["feature"] == gene_map[row["target"]]
 
     def test_membership_counts(self, on_target_adata):
         result = pdex(
@@ -269,8 +269,8 @@ class TestPdexOnTargetMode:
         )
         for group_name in on_target_adata.obs["guide"].unique():
             expected_count = (on_target_adata.obs["guide"] == group_name).sum()
-            row = result.filter(pl.col("group") == group_name)
-            assert row["group_membership"][0] == expected_count
+            row = result.filter(pl.col("target") == group_name)
+            assert row["target_membership"][0] == expected_count
 
     def test_ref_membership_is_constant(self, on_target_adata):
         result = pdex(
@@ -312,7 +312,7 @@ class TestPdexOnTargetMode:
             group_vals, ntc_vals, alternative="two-sided", method="asymptotic"
         )
 
-        row = result.filter(pl.col("group") == "A")
+        row = result.filter(pl.col("target") == "A")
         np.testing.assert_allclose(
             row["statistic"][0], scipy_result.statistic, rtol=1e-6
         )
@@ -365,7 +365,7 @@ class TestPdexOnTargetValidation:
             result = pdex(
                 adata, groupby="guide", mode="on_target", gene_col="target_gene"
             )
-        assert "A" not in result["group"].to_list()
+        assert "A" not in result["target"].to_list()
         assert result.shape[0] == adata.obs["guide"].nunique() - 1
 
 
