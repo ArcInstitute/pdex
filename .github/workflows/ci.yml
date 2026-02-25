@@ -12,6 +12,9 @@ jobs:
 
   install-job:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.12", "3.11"]
 
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +24,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: install dependencies
         run: |
@@ -40,7 +43,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: install dependencies
         run: |
@@ -63,7 +66,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: install dependencies
         run: |
@@ -71,7 +74,7 @@ jobs:
 
       - name: run type checking
         run: |
-          uv run pyright
+          uv run ty check
 
   pytest:
     runs-on: ubuntu-latest
@@ -86,7 +89,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: install dependencies
         run: |

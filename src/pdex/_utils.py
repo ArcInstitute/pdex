@@ -1,23 +1,35 @@
-import anndata as ad
+import logging
+import os
+
+import numba
 import numpy as np
-from scipy.sparse import csc_matrix, csr_matrix
+from scipy.sparse import csr_matrix
 
-EPSILON = 1e-3
+log = logging.getLogger(__name__)
 
 
-def guess_is_log(adata: ad.AnnData) -> bool:
-    """
-    Make an *educated* guess whether the provided anndata is log-transformed.
+def set_numba_threadpool(threads: int = 0):
+    available_threads = os.cpu_count()
+    if available_threads is None:
+        available_threads = 1
 
-    Checks whether the any fractional value of the matrix is greater than an epsilon.
-
-    This *cannot* tell the difference between log and normalized data.
-    """
-    if isinstance(adata.X, csr_matrix) or isinstance(adata.X, csc_matrix):
-        frac, _ = np.modf(adata.X.data)
-    elif adata.X is None:
-        raise ValueError("adata.X is None")
+    if threads == 0:
+        if not available_threads:
+            threads = 1
+        else:
+            threads = available_threads
     else:
-        frac, _ = np.modf(adata.X)  # type: ignore
+        threads = min(threads, available_threads)
 
-    return bool(np.any(frac > EPSILON))
+    log.info("Using %d Numba threads (available: %d)", threads, available_threads)
+    numba.set_num_threads(threads)
+
+
+def _detect_is_log1p(X) -> bool:
+    """Heuristic: log1p-transformed data has a max value below ~20 (log1p(5e8) ≈ 20)."""
+    chunk = X[:500] if X.shape[0] > 500 else X
+    if isinstance(chunk, csr_matrix):
+        sample = chunk.data  # only stored (non-zero) values
+    else:
+        sample = np.asarray(chunk).ravel()
+    return float(np.max(sample)) < 20.0
