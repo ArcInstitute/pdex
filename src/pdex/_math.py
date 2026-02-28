@@ -106,15 +106,15 @@ def bulk_matrix_geometric(
 
 
 @nb.njit(parallel=True)
-def fold_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+def fold_change(x: np.ndarray, y: np.ndarray, eps=1e-4) -> np.ndarray:
     """Calculates the log2-fold change between two arrays."""
-    return np.log2(x / y)
+    return np.log2((x + eps) / (y + eps))
 
 
 @nb.njit(parallel=True)
-def percent_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+def percent_change(x: np.ndarray, y: np.ndarray, eps=1e-4) -> np.ndarray:
     """Calculates the change between two arrays."""
-    return (x - y) / y
+    return (x - y) / (y + eps)
 
 
 def mwu(
