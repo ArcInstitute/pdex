@@ -148,6 +148,8 @@ class TestPdexRefMode:
         explicit_result = pdex(
             small_adata, groupby="guide", is_log1p=False, prior_count=0.0
         )
+        assert isinstance(default_result, pl.DataFrame)
+        assert isinstance(explicit_result, pl.DataFrame)
         assert default_result.equals(explicit_result)
 
 

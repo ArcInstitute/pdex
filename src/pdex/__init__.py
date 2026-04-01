@@ -129,9 +129,9 @@ def _isolate_matrix(
     if adata.X is None:
         raise ValueError("AnnData object does not have a matrix.")
     if mask_y is None:
-        result = adata.X[mask_x]  # type: ignore[not-subscriptable]
+        result = adata.X[mask_x]  # type: ignore
     else:
-        result = adata.X[mask_x, mask_y]  # type: ignore[not-subscriptable]
+        result = adata.X[mask_x, mask_y]  # type: ignore
 
     # Fast path: already in-memory
     if isinstance(result, (np.ndarray, csr_matrix)):
@@ -150,8 +150,8 @@ def pdex(
     threads: int = 0,
     is_log1p: bool | None = None,
     geometric_mean: bool = True,
-    prior_count: float = 0.0,
     as_pandas: bool = False,
+    prior_count: float = 0.0,
     **kwargs,
 ) -> pl.DataFrame | pd.DataFrame:
     """Run parallel differential expression analysis on single-cell data.
@@ -199,15 +199,15 @@ def pdex(
         ``is_log1p=True`` the data is back-transformed before averaging
         (``mean(expm1(X))``) so the output is consistent regardless of input
         format.
+    as_pandas:
+        If ``True``, return a :class:`pandas.DataFrame` instead of a
+        :class:`polars.DataFrame`. Requires ``pyarrow``.
     prior_count:
         Pseudocount added to both ``target_mean`` and ``ref_mean`` before computing
         ``fold_change``. When ``prior_count > 0``, extreme fold changes from near-zero
         reference means (scRNA-seq sparsity artifact) are dampened toward zero.
         Has no effect on the Mann-Whitney U p-value or FDR.
         Default ``0.0`` preserves existing behaviour.
-    as_pandas:
-        If ``True``, return a :class:`pandas.DataFrame` instead of a
-        :class:`polars.DataFrame`. Requires ``pyarrow``.
     **kwargs:
         Mode-specific keyword arguments:
 

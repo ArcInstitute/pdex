@@ -36,7 +36,7 @@ uv run ty check
 
 ### Core Pipeline (`src/pdex/__init__.py`)
 
-The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, prior_count, as_pandas, **kwargs)`, which:
+The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, prior_count, **kwargs)`, which:
 
 1. Validates the `groupby` column in `adata.obs`
 2. Extracts unique groups (filters NaN and empty strings)
