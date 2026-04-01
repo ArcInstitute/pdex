@@ -14,7 +14,7 @@ def _log1p_col_mean(matrix: np.ndarray) -> np.ndarray:
     """Mean of log1p(X) across rows (axis=0) for a dense 2-D array."""
     n_rows, n_cols = matrix.shape
     result = np.zeros(n_cols)
-    for j in nb.prange(n_cols):  # type: ignore
+    for j in nb.prange(n_cols):  # ty: ignore[not-iterable]
         s = 0.0
         for i in range(n_rows):
             s += np.log1p(matrix[i, j])
@@ -26,7 +26,7 @@ def _log1p_col_mean(matrix: np.ndarray) -> np.ndarray:
 def _expm1_vec(x: np.ndarray) -> np.ndarray:
     """Element-wise expm1 over a 1-D array."""
     result = np.empty_like(x)
-    for i in nb.prange(len(x)):  # type: ignore
+    for i in nb.prange(len(x)):  # ty: ignore[not-iterable]
         result[i] = np.expm1(x[i])
     return result
 
@@ -36,7 +36,7 @@ def _expm1_vec_mean(matrix: np.ndarray) -> np.ndarray:
     """Mean of expm1(X) across rows (axis=0) for a dense 2-D array."""
     n_rows, n_cols = matrix.shape
     result = np.zeros(n_cols)
-    for j in nb.prange(n_cols):  # type: ignore
+    for j in nb.prange(n_cols):  # ty: ignore[not-iterable]
         s = 0.0
         for i in range(n_rows):
             s += np.expm1(matrix[i, j])

@@ -129,9 +129,9 @@ def _isolate_matrix(
     if adata.X is None:
         raise ValueError("AnnData object does not have a matrix.")
     if mask_y is None:
-        result = adata.X[mask_x]  # type: ignore
+        result = adata.X[mask_x]  # ty: ignore[not-subscriptable]
     else:
-        result = adata.X[mask_x, mask_y]  # type: ignore
+        result = adata.X[mask_x, mask_y]  # ty: ignore[not-subscriptable]
 
     # Fast path: already in-memory
     if isinstance(result, (np.ndarray, csr_matrix)):
