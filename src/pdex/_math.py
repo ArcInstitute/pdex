@@ -106,9 +106,14 @@ def bulk_matrix_geometric(
 
 
 @nb.njit(parallel=True)
-def fold_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Calculates the log2-fold change between two arrays."""
-    return np.log2(x / y)
+def fold_change(x: np.ndarray, y: np.ndarray, prior_count: float = 0.0) -> np.ndarray:
+    """Calculates the log2-fold change between two arrays.
+
+    When ``prior_count > 0``, adds a small pseudocount to both numerator and
+    denominator before taking the ratio, dampening extreme fold changes that arise
+    when the reference mean is near zero (scRNA-seq sparsity artifact).
+    """
+    return np.log2((x + prior_count) / (y + prior_count))
 
 
 @nb.njit(parallel=True)

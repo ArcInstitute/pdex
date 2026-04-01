@@ -55,6 +55,37 @@ class TestPercentChange:
         np.testing.assert_allclose(result, [-0.5, 0.0, 0.5])
 
 
+class TestFoldChangeWithPriorCount:
+    def test_zero_prior_count_matches_baseline(self):
+        """prior_count=0.0 must be identical to calling without it."""
+        x = np.array([4.0, 8.0, 0.1])
+        y = np.array([2.0, 4.0, 0.001])
+        np.testing.assert_array_equal(fold_change(x, y), fold_change(x, y, 0.0))
+
+    def test_dampens_extreme_fc_from_near_zero_denominator(self):
+        """prior_count=0.5 pulls extreme FC toward zero."""
+        x = np.array([0.1])
+        y = np.array([0.001])
+        fc_raw = fold_change(x, y)[0]
+        fc_dampened = fold_change(x, y, 0.5)[0]
+        assert abs(fc_dampened) < abs(fc_raw)
+        np.testing.assert_allclose(fc_dampened, np.log2(0.6 / 0.501), rtol=1e-5)
+
+    def test_preserves_direction(self):
+        """prior_count should not flip the sign of fold change."""
+        x = np.array([2.0, 0.5])
+        y = np.array([1.0, 1.0])
+        result = fold_change(x, y, 0.5)
+        assert result[0] > 0
+        assert result[1] < 0
+
+    def test_equal_means_still_zero(self):
+        """When target_mean == ref_mean, FC should be 0 regardless of prior_count."""
+        x = np.array([0.5, 2.0])
+        result = fold_change(x, x, 0.5)
+        np.testing.assert_allclose(result, [0.0, 0.0])
+
+
 class TestBulkMatrixGeometric:
     """Tests for bulk_matrix_geometric."""
 

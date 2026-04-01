@@ -150,6 +150,7 @@ def pdex(
     threads: int = 0,
     is_log1p: bool | None = None,
     geometric_mean: bool = True,
+    prior_count: float = 0.0,
     as_pandas: bool = False,
     **kwargs,
 ) -> pl.DataFrame | pd.DataFrame:
@@ -198,6 +199,12 @@ def pdex(
         ``is_log1p=True`` the data is back-transformed before averaging
         (``mean(expm1(X))``) so the output is consistent regardless of input
         format.
+    prior_count:
+        Pseudocount added to both ``target_mean`` and ``ref_mean`` before computing
+        ``fold_change``. When ``prior_count > 0``, extreme fold changes from near-zero
+        reference means (scRNA-seq sparsity artifact) are dampened toward zero.
+        Has no effect on the Mann-Whitney U p-value or FDR.
+        Default ``0.0`` preserves existing behaviour.
     as_pandas:
         If ``True``, return a :class:`pandas.DataFrame` instead of a
         :class:`polars.DataFrame`. Requires ``pyarrow``.
@@ -270,6 +277,7 @@ def pdex(
             reference=reference,
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
+            prior_count=prior_count,
         )
     elif mode == "all":
         if kwargs:
@@ -283,6 +291,7 @@ def pdex(
             groupby=groupby,
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
+            prior_count=prior_count,
         )
     elif mode == "on_target":
         gene_col = kwargs.pop("gene_col", None)
@@ -303,6 +312,7 @@ def pdex(
             reference=reference,
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
+            prior_count=prior_count,
         )
     else:
         raise ValueError(f"Invalid mode: {mode}")
@@ -318,6 +328,7 @@ def _pdex_ref(
     reference: str = DEFAULT_REFERENCE,
     geometric_mean: bool = True,
     is_log1p: bool = False,
+    prior_count: float = 0.0,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups (excluding reference)", len(unique_groups) - 1)
@@ -353,7 +364,7 @@ def _pdex_ref(
             group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
 
-        fc = fold_change(group_bulk, ref_bulk)
+        fc = fold_change(group_bulk, ref_bulk, prior_count)
         pc = percent_change(group_bulk, ref_bulk)
         mwu_result = mwu(group_matrix, ref_data)
 
@@ -386,6 +397,7 @@ def _pdex_all(
     groupby: str,
     geometric_mean: bool = True,
     is_log1p: bool = False,
+    prior_count: float = 0.0,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
@@ -414,7 +426,7 @@ def _pdex_all(
             rest_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
 
-        fc = fold_change(group_bulk, rest_bulk)
+        fc = fold_change(group_bulk, rest_bulk, prior_count)
         pc = percent_change(group_bulk, rest_bulk)
         mwu_result = mwu(group_matrix, rest_matrix)
 
@@ -450,6 +462,7 @@ def _pdex_on_target(
     reference: str = DEFAULT_REFERENCE,
     geometric_mean: bool = True,
     is_log1p: bool = False,
+    prior_count: float = 0.0,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     ref_index = _identify_reference_index(unique_groups, reference)
@@ -501,7 +514,9 @@ def _pdex_on_target(
             pseudobulk(ref_col, geometric_mean=geometric_mean, is_log1p=is_log1p)[0]
         )
 
-        fc = float(fold_change(np.array([target_mean]), np.array([ref_mean]))[0])
+        fc = float(
+            fold_change(np.array([target_mean]), np.array([ref_mean]), prior_count)[0]
+        )
         pc = float(percent_change(np.array([target_mean]), np.array([ref_mean]))[0])
 
         mwu_result = mwu(group_col, ref_col)

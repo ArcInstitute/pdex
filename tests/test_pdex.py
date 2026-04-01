@@ -137,6 +137,19 @@ class TestPdexRefMode:
                 typo_arg="oops",
             )
 
+    def test_prior_count_accepted(self, small_adata):
+        """prior_count parameter is accepted without error."""
+        result = pdex(small_adata, groupby="guide", is_log1p=False, prior_count=0.5)
+        assert isinstance(result, pl.DataFrame)
+
+    def test_prior_count_zero_matches_default(self, small_adata):
+        """prior_count=0.0 produces identical results to omitting the parameter."""
+        default_result = pdex(small_adata, groupby="guide", is_log1p=False)
+        explicit_result = pdex(
+            small_adata, groupby="guide", is_log1p=False, prior_count=0.0
+        )
+        assert default_result.equals(explicit_result)
+
 
 class TestPdexRefSparse:
     """Tests for pdex with sparse CSR input."""
