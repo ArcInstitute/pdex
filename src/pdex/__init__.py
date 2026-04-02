@@ -531,9 +531,7 @@ def _pdex_on_target(
             fold_change(np.array([target_mean]), np.array([ref_mean]), epsilon)[0]
         )
         pc = float(
-            percent_change(np.array([target_mean]), np.array([ref_mean]), epsilon)[
-                0
-            ]
+            percent_change(np.array([target_mean]), np.array([ref_mean]), epsilon)[0]
         )
 
         mwu_result = mwu(group_col, ref_col)
