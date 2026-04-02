@@ -478,6 +478,10 @@ class TestPdexOnTargetValidation:
 
 
 class TestPdexValidation:
+    def test_negative_prior_count_raises(self, small_adata):
+        with pytest.raises(ValueError, match="prior_count must be non-negative"):
+            pdex(small_adata, groupby="guide", is_log1p=False, prior_count=-0.1)
+
     def test_invalid_mode(self, small_adata):
         with pytest.raises(ValueError, match="Invalid mode"):
             pdex(

@@ -117,9 +117,14 @@ def fold_change(x: np.ndarray, y: np.ndarray, prior_count: float = 0.0) -> np.nd
 
 
 @nb.njit(parallel=True)
-def percent_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Calculates the change between two arrays."""
-    return (x - y) / y
+def percent_change(x: np.ndarray, y: np.ndarray, prior_count: float = 0.0) -> np.ndarray:
+    """Calculates the percent change between two arrays.
+
+    When ``prior_count > 0``, adds a pseudocount to the denominator before
+    computing the ratio, dampening extreme values when the reference mean is
+    near zero (scRNA-seq sparsity artifact).
+    """
+    return (x - y) / (y + prior_count)
 
 
 def mwu(

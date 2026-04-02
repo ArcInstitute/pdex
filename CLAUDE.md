@@ -80,7 +80,7 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `target_membership` | int   | Number of cells in the target group                                   |
 | `ref_membership`    | int   | Number of cells in the reference                                      |
 | `fold_change`       | float | log2((target_mean + prior_count) / (ref_mean + prior_count)) — computed from pseudobulk means |
-| `percent_change`    | float | (target_mean - ref_mean) / ref_mean — computed from pseudobulk means  |
+| `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + prior_count) — computed from pseudobulk means |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |
 | `statistic`         | float | Mann-Whitney U statistic                                              |
 | `fdr`               | float | FDR-corrected p-value, applied per-group across genes. For `on_target` mode, applied across all groups.                 |
