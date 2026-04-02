@@ -100,7 +100,9 @@ class TestPercentChangeWithPriorCount:
         pc_raw = percent_change(x, y)[0]
         pc_dampened = percent_change(x, y, 0.5)[0]
         assert abs(pc_dampened) < abs(pc_raw)
-        np.testing.assert_allclose(pc_dampened, (0.1 - 0.001) / (0.001 + 0.5), rtol=1e-5)
+        np.testing.assert_allclose(
+            pc_dampened, (0.1 - 0.001) / (0.001 + 0.5), rtol=1e-5
+        )
 
     def test_preserves_direction(self):
         """prior_count should not flip the sign of percent change."""

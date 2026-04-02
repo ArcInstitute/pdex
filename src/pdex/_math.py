@@ -117,7 +117,9 @@ def fold_change(x: np.ndarray, y: np.ndarray, prior_count: float = 0.0) -> np.nd
 
 
 @nb.njit(parallel=True)
-def percent_change(x: np.ndarray, y: np.ndarray, prior_count: float = 0.0) -> np.ndarray:
+def percent_change(
+    x: np.ndarray, y: np.ndarray, prior_count: float = 0.0
+) -> np.ndarray:
     """Calculates the percent change between two arrays.
 
     When ``prior_count > 0``, adds a pseudocount to the denominator before
