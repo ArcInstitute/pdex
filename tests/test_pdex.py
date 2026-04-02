@@ -137,6 +137,21 @@ class TestPdexRefMode:
                 typo_arg="oops",
             )
 
+    def test_epsilon_accepted(self, small_adata):
+        """epsilon parameter is accepted without error."""
+        result = pdex(small_adata, groupby="guide", is_log1p=False, epsilon=0.5)
+        assert isinstance(result, pl.DataFrame)
+
+    def test_epsilon_zero_matches_default(self, small_adata):
+        """epsilon=0.0 produces identical results to omitting the parameter."""
+        default_result = pdex(small_adata, groupby="guide", is_log1p=False)
+        explicit_result = pdex(
+            small_adata, groupby="guide", is_log1p=False, epsilon=0.0
+        )
+        assert isinstance(default_result, pl.DataFrame)
+        assert isinstance(explicit_result, pl.DataFrame)
+        assert default_result.equals(explicit_result)
+
 
 class TestPdexRefSparse:
     """Tests for pdex with sparse CSR input."""
@@ -463,6 +478,10 @@ class TestPdexOnTargetValidation:
 
 
 class TestPdexValidation:
+    def test_negative_epsilon_raises(self, small_adata):
+        with pytest.raises(ValueError, match="epsilon must be non-negative"):
+            pdex(small_adata, groupby="guide", is_log1p=False, epsilon=-0.1)
+
     def test_invalid_mode(self, small_adata):
         with pytest.raises(ValueError, match="Invalid mode"):
             pdex(

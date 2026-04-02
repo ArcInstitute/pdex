@@ -36,7 +36,7 @@ uv run ty check
 
 ### Core Pipeline (`src/pdex/__init__.py`)
 
-The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, **kwargs)`, which:
+The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, epsilon, **kwargs)`, which:
 
 1. Validates the `groupby` column in `adata.obs`
 2. Extracts unique groups (filters NaN and empty strings)
@@ -79,8 +79,8 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `ref_mean`          | float | Pseudobulk mean for the reference, always in natural (count) space    |
 | `target_membership` | int   | Number of cells in the target group                                   |
 | `ref_membership`    | int   | Number of cells in the reference                                      |
-| `fold_change`       | float | log2(target_mean / ref_mean) — computed from pseudobulk means         |
-| `percent_change`    | float | (target_mean - ref_mean) / ref_mean — computed from pseudobulk means  |
+| `fold_change`       | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means |
+| `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |
 | `statistic`         | float | Mann-Whitney U statistic                                              |
 | `fdr`               | float | FDR-corrected p-value, applied per-group across genes. For `on_target` mode, applied across all groups.                 |

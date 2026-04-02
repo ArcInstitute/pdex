@@ -14,7 +14,7 @@ def _log1p_col_mean(matrix: np.ndarray) -> np.ndarray:
     """Mean of log1p(X) across rows (axis=0) for a dense 2-D array."""
     n_rows, n_cols = matrix.shape
     result = np.zeros(n_cols)
-    for j in nb.prange(n_cols):  # type: ignore[attr-defined]
+    for j in nb.prange(n_cols):  # ty: ignore[not-iterable]
         s = 0.0
         for i in range(n_rows):
             s += np.log1p(matrix[i, j])
@@ -26,7 +26,7 @@ def _log1p_col_mean(matrix: np.ndarray) -> np.ndarray:
 def _expm1_vec(x: np.ndarray) -> np.ndarray:
     """Element-wise expm1 over a 1-D array."""
     result = np.empty_like(x)
-    for i in nb.prange(len(x)):  # type: ignore[attr-defined]
+    for i in nb.prange(len(x)):  # ty: ignore[not-iterable]
         result[i] = np.expm1(x[i])
     return result
 
@@ -36,7 +36,7 @@ def _expm1_vec_mean(matrix: np.ndarray) -> np.ndarray:
     """Mean of expm1(X) across rows (axis=0) for a dense 2-D array."""
     n_rows, n_cols = matrix.shape
     result = np.zeros(n_cols)
-    for j in nb.prange(n_cols):  # type: ignore[attr-defined]
+    for j in nb.prange(n_cols):  # ty: ignore[not-iterable]
         s = 0.0
         for i in range(n_rows):
             s += np.expm1(matrix[i, j])
@@ -106,15 +106,27 @@ def bulk_matrix_geometric(
 
 
 @nb.njit(parallel=True)
-def fold_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Calculates the log2-fold change between two arrays."""
-    return np.log2(x / y)
+def fold_change(x: np.ndarray, y: np.ndarray, epsilon: float = 0.0) -> np.ndarray:
+    """Calculates the log2-fold change between two arrays.
+
+    When ``epsilon > 0``, adds a small pseudocount to both numerator and
+    denominator before taking the ratio, dampening extreme fold changes that arise
+    when the reference mean is near zero (scRNA-seq sparsity artifact).
+    """
+    return np.log2((x + epsilon) / (y + epsilon))
 
 
 @nb.njit(parallel=True)
-def percent_change(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Calculates the change between two arrays."""
-    return (x - y) / y
+def percent_change(
+    x: np.ndarray, y: np.ndarray, prior_count: float = 0.0
+) -> np.ndarray:
+    """Calculates the percent change between two arrays.
+
+    When ``prior_count > 0``, adds a pseudocount to the denominator before
+    computing the ratio, dampening extreme values when the reference mean is
+    near zero (scRNA-seq sparsity artifact).
+    """
+    return (x - y) / (y + prior_count)
 
 
 def mwu(
