@@ -5,10 +5,41 @@ on: [push, pull_request]
 jobs:
   all_jobs:
     runs-on: ubuntu-latest
-    needs: [formatting, type-checking, pytest]
+    needs: [formatting, type-checking, pytest, semver-check]
+    if: always()
     steps:
       - name: Complete
-        run: echo "Complete"
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "Complete"
+
+  semver-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check version bump
+        run: |
+          BASE_VERSION=$(git show origin/${{ github.base_ref }}:pyproject.toml \
+            | python3 -c "import sys, tomllib; print(tomllib.load(sys.stdin.buffer)['project']['version'])")
+          PR_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "Base version: $BASE_VERSION"
+          echo "PR version:   $PR_VERSION"
+          if [ -z "$BASE_VERSION" ] || [ -z "$PR_VERSION" ]; then
+            echo "ERROR: failed to parse version from pyproject.toml"
+            exit 1
+          fi
+          if [ "$BASE_VERSION" = "$PR_VERSION" ]; then
+            echo "ERROR: version in pyproject.toml ($PR_VERSION) must be bumped before merging."
+            exit 1
+          fi
 
   install-job:
     runs-on: ubuntu-latest
