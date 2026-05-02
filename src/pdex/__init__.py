@@ -240,13 +240,13 @@ def pdex(
 
         ``log2_fold_change`` and ``percent_change`` are derived from the pseudobulk
         means (not from the per-cell MWU test inputs): ``log2_fold_change`` is
-        ``log2(target_mean / ref_mean)`` and ``percent_change`` is
-        ``(target_mean - ref_mean) / ref_mean``.
+        ``log2((target_mean + epsilon) / (ref_mean + epsilon))`` and
+        ``percent_change`` is ``(target_mean - ref_mean) / (ref_mean + epsilon)``.
 
         ``fold_change`` is a **deprecated** alias for ``log2_fold_change``
         (identical values). It is retained for one release to ease migration
         and will be removed in pdex 0.3.0. New code should read
-        ``log2_fold_change`` directly. A :class:`DeprecationWarning` is emitted
+        ``log2_fold_change`` directly. A :class:`FutureWarning` is emitted
         on every ``pdex(...)`` call.  The MWU ``p_value`` and
         ``statistic`` are computed directly on the per-cell expression vectors.
 
@@ -270,7 +270,7 @@ def pdex(
         "The `fold_change` column in pdex output is deprecated and will be "
         "removed in pdex 0.3.0. Use `log2_fold_change` instead — it contains "
         "the same values (`log2(target_mean / ref_mean)`).",
-        DeprecationWarning,
+        FutureWarning,
         stacklevel=2,
     )
 
