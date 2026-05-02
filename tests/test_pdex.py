@@ -15,6 +15,7 @@ EXPECTED_COLUMNS = {
     "target_membership",
     "ref_membership",
     "fold_change",
+    "log2_fold_change",
     "percent_change",
     "p_value",
     "statistic",
@@ -664,3 +665,20 @@ class TestPdexBacked:
                 rtol=1e-6,
                 err_msg=f"Mismatch in column {col}",
             )
+
+
+class TestLog2FoldChangeColumn:
+    """Regression test for the `log2_fold_change` column semantics."""
+
+    @pytest.mark.parametrize("mode", ["ref", "all"])
+    def test_log2_fold_change_equals_log2_ratio(self, small_adata, mode):
+        """log2_fold_change == log2(target_mean / ref_mean) on finite entries."""
+        result = pdex(small_adata, groupby="guide", mode=mode, is_log1p=False)
+        target = result["target_mean"].to_numpy()
+        ref = result["ref_mean"].to_numpy()
+        actual = result["log2_fold_change"].to_numpy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            expected = np.log2(target / ref)
+        finite = np.isfinite(expected) & np.isfinite(actual)
+        assert finite.any()
+        np.testing.assert_allclose(actual[finite], expected[finite], rtol=1e-6)
