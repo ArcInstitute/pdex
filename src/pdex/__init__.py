@@ -12,7 +12,7 @@ from scipy.sparse import csr_matrix, issparse
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
-from pdex._math import fold_change, mwu, percent_change, pseudobulk
+from pdex._math import log2_fold_change, mwu, percent_change, pseudobulk
 
 from ._utils import _detect_is_log1p, set_numba_threadpool
 
@@ -233,14 +233,21 @@ def pdex(
     pl.DataFrame | pd.DataFrame
         One row per (group, feature) pair with columns: ``target``, ``feature``,
         ``target_mean``, ``ref_mean``, ``target_membership``, ``ref_membership``,
-        ``fold_change``, ``percent_change``, ``p_value``, ``statistic``, ``fdr``.
+        ``fold_change``, ``log2_fold_change``, ``percent_change``, ``p_value``,
+        ``statistic``, ``fdr``.
 
         ``target_mean`` and ``ref_mean`` are always in **natural (count) space**.
 
-        ``fold_change`` and ``percent_change`` are derived from the pseudobulk
-        means (not from the per-cell MWU test inputs): ``fold_change`` is
-        ``log2(target_mean / ref_mean)`` and ``percent_change`` is
-        ``(target_mean - ref_mean) / ref_mean``.  The MWU ``p_value`` and
+        ``log2_fold_change`` and ``percent_change`` are derived from the pseudobulk
+        means (not from the per-cell MWU test inputs): ``log2_fold_change`` is
+        ``log2((target_mean + epsilon) / (ref_mean + epsilon))`` and
+        ``percent_change`` is ``(target_mean - ref_mean) / (ref_mean + epsilon)``.
+
+        ``fold_change`` is a **deprecated** alias for ``log2_fold_change``
+        (identical values). It is retained for one release to ease migration
+        and will be removed in pdex 0.3.0. New code should read
+        ``log2_fold_change`` directly. A :class:`FutureWarning` is emitted
+        on every ``pdex(...)`` call.  The MWU ``p_value`` and
         ``statistic`` are computed directly on the per-cell expression vectors.
 
         For ``mode="ref"``, the reference group itself is excluded from the output.
@@ -258,6 +265,14 @@ def pdex(
 
     if epsilon < 0:
         raise ValueError(f"epsilon must be non-negative, got {epsilon}")
+
+    warnings.warn(
+        "The `fold_change` column in pdex output is deprecated and will be "
+        "removed in pdex 0.3.0. Use `log2_fold_change` instead — it contains "
+        "the same values (`log2(target_mean / ref_mean)`).",
+        FutureWarning,
+        stacklevel=2,
+    )
 
     # Set the global threadpool for numba
     set_numba_threadpool(threads)
@@ -377,7 +392,7 @@ def _pdex_ref(
             group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
 
-        fc = fold_change(group_bulk, ref_bulk, epsilon)
+        lfc = log2_fold_change(group_bulk, ref_bulk, epsilon)
         pc = percent_change(group_bulk, ref_bulk, epsilon)
         mwu_result = mwu(group_matrix, ref_data)
 
@@ -394,7 +409,8 @@ def _pdex_ref(
                     "ref_mean": np.asarray(ref_bulk).ravel(),
                     "target_membership": group_mask.size,
                     "ref_membership": ref_membership,
-                    "fold_change": fc,
+                    "fold_change": lfc,
+                    "log2_fold_change": lfc,
                     "percent_change": pc,
                     "p_value": mwu_pvalue,
                     "statistic": mwu_statistic,
@@ -439,7 +455,7 @@ def _pdex_all(
             rest_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
 
-        fc = fold_change(group_bulk, rest_bulk, epsilon)
+        lfc = log2_fold_change(group_bulk, rest_bulk, epsilon)
         pc = percent_change(group_bulk, rest_bulk, epsilon)
         mwu_result = mwu(group_matrix, rest_matrix)
 
@@ -456,7 +472,8 @@ def _pdex_all(
                     "ref_mean": np.asarray(rest_bulk).ravel(),
                     "target_membership": group_mask.size,
                     "ref_membership": rest_mask.size,
-                    "fold_change": fc,
+                    "fold_change": lfc,
+                    "log2_fold_change": lfc,
                     "percent_change": pc,
                     "p_value": mwu_pvalue,
                     "statistic": mwu_statistic,
@@ -527,8 +544,8 @@ def _pdex_on_target(
             pseudobulk(ref_col, geometric_mean=geometric_mean, is_log1p=is_log1p)[0]
         )
 
-        fc = float(
-            fold_change(np.array([target_mean]), np.array([ref_mean]), epsilon)[0]
+        lfc = float(
+            log2_fold_change(np.array([target_mean]), np.array([ref_mean]), epsilon)[0]
         )
         pc = float(
             percent_change(np.array([target_mean]), np.array([ref_mean]), epsilon)[0]
@@ -546,7 +563,8 @@ def _pdex_on_target(
                 "ref_mean": ref_mean,
                 "target_membership": group_mask.size,
                 "ref_membership": ref_membership,
-                "fold_change": fc,
+                "fold_change": lfc,
+                "log2_fold_change": lfc,
                 "percent_change": pc,
                 "p_value": p_value,
                 "statistic": statistic,

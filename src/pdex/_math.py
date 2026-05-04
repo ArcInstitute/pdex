@@ -106,7 +106,7 @@ def bulk_matrix_geometric(
 
 
 @nb.njit(parallel=True)
-def fold_change(x: np.ndarray, y: np.ndarray, epsilon: float = 0.0) -> np.ndarray:
+def log2_fold_change(x: np.ndarray, y: np.ndarray, epsilon: float = 0.0) -> np.ndarray:
     """Calculates the log2-fold change between two arrays.
 
     When ``epsilon > 0``, adds a small pseudocount to both numerator and

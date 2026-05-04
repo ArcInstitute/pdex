@@ -79,7 +79,8 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `ref_mean`          | float | Pseudobulk mean for the reference, always in natural (count) space    |
 | `target_membership` | int   | Number of cells in the target group                                   |
 | `ref_membership`    | int   | Number of cells in the reference                                      |
-| `fold_change`       | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means |
+| `fold_change`       | float | **Deprecated** alias for `log2_fold_change` (identical values). Retained for one release; emits a `FutureWarning` on every `pdex(...)` call and will be removed in pdex 0.3.0. |
+| `log2_fold_change`  | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means |
 | `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |
 | `statistic`         | float | Mann-Whitney U statistic                                              |

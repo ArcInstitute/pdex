@@ -95,7 +95,8 @@ Returns a Polars DataFrame (or pandas if `as_pandas=True`) with one row per (gro
 | `ref_mean`          | Pseudobulk mean for the reference (count space)    |
 | `target_membership` | Number of cells in the target group                |
 | `ref_membership`    | Number of cells in the reference                   |
-| `fold_change`       | log2(target_mean / ref_mean)                       |
+| `fold_change`       | **Deprecated alias** for `log2_fold_change` (identical values). Will be removed in pdex 0.3.0. |
+| `log2_fold_change`  | log2(target_mean / ref_mean)                       |
 | `percent_change`    | (target_mean - ref_mean) / ref_mean                |
 | `p_value`           | Mann-Whitney U p-value                             |
 | `statistic`         | Mann-Whitney U statistic                           |
