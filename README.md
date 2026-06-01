@@ -96,8 +96,8 @@ Returns a Polars DataFrame (or pandas if `as_pandas=True`) with one row per (gro
 | `target_membership` | Number of cells in the target group                |
 | `ref_membership`    | Number of cells in the reference                   |
 | `fold_change`       | **Deprecated alias** for `log2_fold_change` (identical values). Will be removed in pdex 0.3.0. |
-| `log2_fold_change`  | log2(target_mean / ref_mean)                       |
-| `percent_change`    | (target_mean - ref_mean) / ref_mean                |
+| `log2_fold_change`  | log2(target_mean / ref_mean). Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
+| `percent_change`    | (target_mean - ref_mean) / ref_mean. Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
 | `p_value`           | Mann-Whitney U p-value                             |
 | `statistic`         | Mann-Whitney U statistic                           |
 | `fdr`               | FDR-corrected p-value (per-group, across genes). For `on_target` mode, this is applied across all groups.    |

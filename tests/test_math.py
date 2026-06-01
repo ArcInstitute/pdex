@@ -29,6 +29,22 @@ class TestFoldChange:
         result = log2_fold_change(x, y)
         np.testing.assert_allclose(result, [0.0, 1.0, 2.0, 3.0])
 
+    def test_zero_over_zero_is_zero(self):
+        """0/0 (unexpressed in both groups) is defined as 0.0, not NaN."""
+        x = np.array([0.0])
+        y = np.array([0.0])
+        result = log2_fold_change(x, y)
+        assert not np.isnan(result).any()
+        np.testing.assert_array_equal(result, [0.0])
+
+    def test_zero_over_zero_mixed_with_finite_and_inf(self):
+        """0/0 -> 0.0 while normal ratios and one-sided zeros are untouched."""
+        x = np.array([0.0, 4.0, 0.0, 4.0])
+        y = np.array([0.0, 2.0, 1.0, 0.0])
+        result = log2_fold_change(x, y)
+        # 0/0 -> 0.0, log2(2) -> 1.0, log2(0) -> -inf, log2(4/0) -> +inf
+        np.testing.assert_array_equal(result, [0.0, 1.0, -np.inf, np.inf])
+
 
 class TestPercentChange:
     def test_double(self):
@@ -53,6 +69,22 @@ class TestPercentChange:
         y = np.array([10.0, 10.0, 10.0])
         result = percent_change(x, y)
         np.testing.assert_allclose(result, [-0.5, 0.0, 0.5])
+
+    def test_zero_over_zero_is_zero(self):
+        """0/0 (unexpressed in both groups) is defined as 0.0, not NaN."""
+        x = np.array([0.0])
+        y = np.array([0.0])
+        result = percent_change(x, y)
+        assert not np.isnan(result).any()
+        np.testing.assert_array_equal(result, [0.0])
+
+    def test_zero_over_zero_mixed_with_finite_and_inf(self):
+        """0/0 -> 0.0 while normal ratios and a zero reference are untouched."""
+        x = np.array([0.0, 4.0, 4.0])
+        y = np.array([0.0, 2.0, 0.0])
+        result = percent_change(x, y)
+        # 0/0 -> 0.0, (4-2)/2 -> 1.0, (4-0)/0 -> +inf
+        np.testing.assert_array_equal(result, [0.0, 1.0, np.inf])
 
 
 class TestFoldChangeWithEpsilon:
