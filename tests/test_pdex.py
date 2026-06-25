@@ -682,3 +682,57 @@ class TestLog2FoldChangeColumn:
         finite = np.isfinite(expected) & np.isfinite(actual)
         assert finite.any()
         np.testing.assert_allclose(actual[finite], expected[finite], rtol=1e-6)
+
+
+class TestUnexpressedInBothGroups:
+    """A feature unexpressed in both groups (0/0) reports 0.0, not NaN."""
+
+    @pytest.mark.parametrize("mode", ["ref", "all"])
+    def test_zero_in_both_is_zero_not_nan(self, small_adata, mode):
+        """gene_0 is zero everywhere -> 0/0 in every comparison -> 0.0."""
+        adata = small_adata.copy()
+        adata.X[:, 0] = 0.0  # gene_0 unexpressed in every cell
+
+        result = pdex(adata, groupby="guide", mode=mode, is_log1p=False, epsilon=0.0)
+        gene0 = result.filter(pl.col("feature") == "gene_0")
+
+        assert (gene0["target_mean"].to_numpy() == 0).all()
+        assert (gene0["ref_mean"].to_numpy() == 0).all()
+        for col in ["log2_fold_change", "fold_change", "percent_change"]:
+            values = gene0[col].to_numpy()
+            assert not np.isnan(values).any(), f"{col} contains NaN"
+            np.testing.assert_array_equal(values, 0.0)
+
+    def test_on_target_zero_in_both_is_zero_not_nan(self, on_target_adata):
+        """on_target mode: a targeted gene that is zero everywhere reports 0.0."""
+        adata = on_target_adata.copy()
+        adata.X[:, 1] = 0.0  # group "A" targets gene_1
+
+        result = pdex(
+            adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+            epsilon=0.0,
+        )
+        row = result.filter(pl.col("target") == "A")
+        assert row["target_mean"].to_numpy()[0] == 0
+        assert row["ref_mean"].to_numpy()[0] == 0
+        for col in ["log2_fold_change", "fold_change", "percent_change"]:
+            value = row[col].to_numpy()[0]
+            assert not np.isnan(value), f"{col} is NaN"
+            assert value == 0.0
+
+    def test_one_sided_zero_still_infinite(self, small_adata):
+        """Only 0/0 is filled; a zero target over a nonzero reference stays infinite."""
+        adata = small_adata.copy()
+        # gene_0 expressed only in the reference -> target_mean 0, ref_mean > 0
+        adata.X[:, 0] = 0.0
+        adata.X[adata.obs["guide"].to_numpy() == "non-targeting", 0] = 5.0
+
+        result = pdex(adata, groupby="guide", mode="ref", is_log1p=False, epsilon=0.0)
+        gene0 = result.filter(pl.col("feature") == "gene_0")
+        # log2(0 / ref) -> -inf; percent_change (0 - ref) / ref -> -1.0
+        assert np.isneginf(gene0["log2_fold_change"].to_numpy()).all()
+        np.testing.assert_allclose(gene0["percent_change"].to_numpy(), -1.0)

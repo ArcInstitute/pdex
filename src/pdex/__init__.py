@@ -203,11 +203,13 @@ def pdex(
         If ``True``, return a :class:`pandas.DataFrame` instead of a
         :class:`polars.DataFrame`. Requires ``pyarrow``.
     epsilon:
-        Pseudocount added to both ``target_mean`` and ``ref_mean`` before computing
-        ``fold_change`` and ``percent_change``. When ``epsilon > 0``, extreme
-        values from near-zero reference means (scRNA-seq sparsity artifact) are
-        dampened toward zero. Has no effect on the Mann-Whitney U p-value or FDR.
-        Default ``0.0`` preserves existing behaviour.
+        Pseudocount added to the denominator (and, for ``log2_fold_change``, the
+        numerator) before computing ``fold_change`` and ``percent_change``. When
+        ``epsilon > 0``, extreme values from near-zero reference means (scRNA-seq
+        sparsity artifact) are dampened toward zero. Has no effect on the
+        Mann-Whitney U p-value or FDR. Default ``0.0`` preserves existing behaviour;
+        regardless of ``epsilon``, features unexpressed in both groups report
+        ``0.0`` (no change) rather than ``NaN`` (see Returns).
 
         **Recommended usage:** For scRNA-seq CRISPRi/CRISPRa screens where many
         genes are unexpressed in the reference group, start with ``epsilon=0.5``.
@@ -242,6 +244,11 @@ def pdex(
         means (not from the per-cell MWU test inputs): ``log2_fold_change`` is
         ``log2((target_mean + epsilon) / (ref_mean + epsilon))`` and
         ``percent_change`` is ``(target_mean - ref_mean) / (ref_mean + epsilon)``.
+
+        Features unexpressed in both groups (``target_mean == ref_mean == 0`` with
+        ``epsilon == 0``) would evaluate to ``0 / 0``; both ``log2_fold_change``
+        and ``percent_change`` define this as ``0.0`` (no change) rather than
+        ``NaN``. One-sided zeros still produce ``±inf``.
 
         ``fold_change`` is a **deprecated** alias for ``log2_fold_change``
         (identical values). It is retained for one release to ease migration

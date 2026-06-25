@@ -80,8 +80,8 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `target_membership` | int   | Number of cells in the target group                                   |
 | `ref_membership`    | int   | Number of cells in the reference                                      |
 | `fold_change`       | float | **Deprecated** alias for `log2_fold_change` (identical values). Retained for one release; emits a `FutureWarning` on every `pdex(...)` call and will be removed in pdex 0.3.0. |
-| `log2_fold_change`  | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means |
-| `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means |
+| `log2_fold_change`  | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means. Features unexpressed in both groups (`target_mean == ref_mean == 0`, only with `epsilon == 0`) give `0/0`, defined as `0.0` (not `NaN`); one-sided zeros still yield `±inf`. |
+| `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means. Features unexpressed in both groups (`target_mean == ref_mean == 0`, only with `epsilon == 0`) give `0/0`, defined as `0.0` (not `NaN`); a zero reference with nonzero target still yields `+inf`. |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |
 | `statistic`         | float | Mann-Whitney U statistic                                              |
 | `fdr`               | float | FDR-corrected p-value, applied per-group across genes. For `on_target` mode, applied across all groups.                 |

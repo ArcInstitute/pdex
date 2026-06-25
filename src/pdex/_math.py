@@ -112,8 +112,15 @@ def log2_fold_change(x: np.ndarray, y: np.ndarray, epsilon: float = 0.0) -> np.n
     When ``epsilon > 0``, adds a small pseudocount to both numerator and
     denominator before taking the ratio, dampening extreme fold changes that arise
     when the reference mean is near zero (scRNA-seq sparsity artifact).
+
+    Entries that are zero in both arrays (a feature unexpressed in both groups,
+    only possible when ``epsilon == 0``) evaluate to ``log2(0 / 0)``; these are
+    defined as ``0.0`` (no change) rather than ``NaN``. Legitimate ``±inf`` values
+    from one-sided zeros are preserved.
     """
-    return np.log2((x + epsilon) / (y + epsilon))
+    lfc = np.log2((x + epsilon) / (y + epsilon))
+    lfc[np.isnan(lfc)] = 0.0
+    return lfc
 
 
 @nb.njit(parallel=True)
@@ -125,8 +132,15 @@ def percent_change(
     When ``prior_count > 0``, adds a pseudocount to the denominator before
     computing the ratio, dampening extreme values when the reference mean is
     near zero (scRNA-seq sparsity artifact).
+
+    Entries that are zero in both arrays (a feature unexpressed in both groups,
+    only possible when ``prior_count == 0``) evaluate to ``0 / 0``; these are
+    defined as ``0.0`` (no change) rather than ``NaN``. Legitimate ``+inf`` values
+    from a zero reference are preserved.
     """
-    return (x - y) / (y + prior_count)
+    pc = (x - y) / (y + prior_count)
+    pc[np.isnan(pc)] = 0.0
+    return pc
 
 
 def mwu(
