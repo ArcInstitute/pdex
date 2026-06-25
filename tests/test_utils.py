@@ -1,10 +1,8 @@
 """Tests for pdex._utils (set_numba_threadpool)."""
 
-import os
-
 import numba
 
-from pdex._utils import set_numba_threadpool
+from pdex._utils import _available_cpus, set_numba_threadpool
 
 
 class TestSetNumbaThreadpool:
@@ -12,10 +10,9 @@ class TestSetNumbaThreadpool:
         set_numba_threadpool(4)
         assert numba.get_num_threads() == 4
 
-    def test_zero_uses_all_cpus(self):
+    def test_zero_uses_all_available_cpus(self):
         set_numba_threadpool(0)
-        expected = os.cpu_count() or 1
-        assert numba.get_num_threads() == expected
+        assert numba.get_num_threads() == _available_cpus()
 
     def test_single_thread(self):
         set_numba_threadpool(1)
