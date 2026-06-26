@@ -1,8 +1,14 @@
 """Tests for pdex._math (log2_fold_change, percent_change, bulk_matrix_geometric)."""
 
 import numpy as np
+from scipy.sparse import csr_matrix
 
-from pdex._math import bulk_matrix_geometric, log2_fold_change, percent_change
+from pdex._math import (
+    bulk_matrix_geometric,
+    cpm_bulk,
+    log2_fold_change,
+    percent_change,
+)
 
 
 class TestFoldChange:
@@ -186,3 +192,44 @@ class TestBulkMatrixGeometric:
         result = bulk_matrix_geometric(x, is_log1p=False)
         expected = np.expm1(np.log1p(x).mean(axis=0))
         np.testing.assert_allclose(result, expected)
+
+
+class TestCpmBulk:
+    """Tests for cpm_bulk (pooled CPM view used by the cpm_filter)."""
+
+    def test_known_values_dense(self):
+        """cpm[g] = Σcounts_g / Σcounts_all * 1e6."""
+        x = np.array([[1.0, 3.0], [3.0, 5.0], [5.0, 1.0]])
+        # gene sums: 9, 9; total 18 -> 0.5 each
+        result = cpm_bulk(x, is_log1p=False)
+        np.testing.assert_allclose(result, [500_000.0, 500_000.0])
+
+    def test_sums_to_one_million(self):
+        x = np.array([[2.0, 4.0, 0.0], [6.0, 1.0, 3.0]])
+        np.testing.assert_allclose(cpm_bulk(x, is_log1p=False).sum(), 1e6)
+
+    def test_sparse_matches_dense(self):
+        x = np.array([[1.0, 3.0, 0.0], [3.0, 5.0, 2.0], [5.0, 1.0, 0.0]])
+        dense = cpm_bulk(x, is_log1p=False)
+        sparse = cpm_bulk(csr_matrix(x), is_log1p=False)
+        np.testing.assert_allclose(dense, sparse)
+
+    def test_log1p_agrees_with_counts(self):
+        """is_log1p=True on log1p(counts) matches is_log1p=False on counts."""
+        counts = np.array([[2.0, 4.0], [6.0, 8.0], [10.0, 2.0]])
+        from_counts = cpm_bulk(counts, is_log1p=False)
+        from_log = cpm_bulk(np.log1p(counts), is_log1p=True)
+        np.testing.assert_allclose(from_counts, from_log, rtol=1e-10)
+
+    def test_all_zero_is_zero_not_nan(self):
+        """An all-zero group yields all-zero CPM (denominator guard), never nan/inf."""
+        x = np.zeros((3, 4))
+        result = cpm_bulk(x, is_log1p=False)
+        assert not np.isnan(result).any()
+        assert not np.isinf(result).any()
+        np.testing.assert_array_equal(result, np.zeros(4))
+
+    def test_scale_invariant(self):
+        """Uniformly rescaling counts does not change the CPM (ratio cancels)."""
+        x = np.array([[1.0, 3.0, 7.0], [3.0, 5.0, 2.0], [5.0, 1.0, 4.0]])
+        np.testing.assert_allclose(cpm_bulk(x, False), cpm_bulk(100.0 * x, False))

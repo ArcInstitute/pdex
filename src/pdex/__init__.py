@@ -12,7 +12,14 @@ from scipy.sparse import csr_matrix, issparse
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
-from pdex._math import log2_fold_change, mwu, percent_change, pseudobulk
+from pdex._math import (
+    bulk_matrix_arithmetic,
+    cpm_bulk,
+    log2_fold_change,
+    mwu,
+    percent_change,
+    pseudobulk,
+)
 
 from ._utils import _detect_is_log1p, set_numba_threadpool
 
@@ -143,6 +150,42 @@ def _isolate_matrix(
     return np.asarray(result)
 
 
+def _x_has_negative(x: np.ndarray | csr_matrix | None) -> bool:
+    """Best-effort check for negative values in the expression matrix.
+
+    Negative values break the CPM computation used by ``cpm_filter`` (counts
+    cannot be negative). In-memory dense/sparse matrices are checked in full;
+    backed/other inputs fall back to a bounded sample of the leading rows.
+    """
+    if x is None:
+        return False
+    if isinstance(x, csr_matrix):
+        return bool(x.data.size and (x.data < 0).any())
+    if isinstance(x, np.ndarray):
+        return bool(x.size and (x < 0).any())
+    arr = np.asarray(x[: min(1000, x.shape[0])])
+    return bool(arr.size and (arr < 0).any())
+
+
+def _per_cell_library_sizes(adata: ad.AnnData, is_log1p: bool) -> np.ndarray:
+    """Per-cell total expression over all genes, in natural (count) space.
+
+    Needed by ``on_target`` mode's CPM filter: the single-gene slices don't carry
+    the library size, so it is precomputed once over the full matrix (``expm1`` is
+    applied first when ``is_log1p``). Returns a 1-D float64 array of length n_obs.
+    """
+    x = _isolate_matrix(adata, np.arange(adata.n_obs))
+    if is_log1p:
+        if isinstance(x, csr_matrix):
+            x = x.copy()
+            np.expm1(x.data, out=x.data)
+        else:
+            x = np.expm1(np.asarray(x, dtype=np.float64))
+    if isinstance(x, csr_matrix):
+        return np.asarray(x.sum(axis=1)).ravel().astype(np.float64)
+    return np.asarray(x, dtype=np.float64).sum(axis=1)
+
+
 def pdex(
     adata: ad.AnnData,
     groupby: str,
@@ -151,7 +194,8 @@ def pdex(
     is_log1p: bool | None = None,
     geometric_mean: bool = True,
     as_pandas: bool = False,
-    epsilon: float = 0.0,
+    epsilon: float = 1e-9,
+    cpm_filter: float | None = None,
     **kwargs,
 ) -> pl.DataFrame | pd.DataFrame:
     """Run parallel differential expression analysis on single-cell data.
@@ -203,23 +247,44 @@ def pdex(
         If ``True``, return a :class:`pandas.DataFrame` instead of a
         :class:`polars.DataFrame`. Requires ``pyarrow``.
     epsilon:
-        Pseudocount added to the denominator (and, for ``log2_fold_change``, the
-        numerator) before computing ``fold_change`` and ``percent_change``. When
-        ``epsilon > 0``, extreme values from near-zero reference means (scRNA-seq
-        sparsity artifact) are dampened toward zero. Has no effect on the
-        Mann-Whitney U p-value or FDR. Default ``0.0`` preserves existing behaviour;
-        regardless of ``epsilon``, features unexpressed in both groups report
-        ``0.0`` (no change) rather than ``NaN`` (see Returns).
+        Pseudocount added to the **native (count-space) means** — the denominator
+        (and, for ``log2_fold_change``, the numerator) — before computing
+        ``fold_change`` and ``percent_change``. It is never applied to the CPM view
+        used by ``cpm_filter``. When ``epsilon > 0``, extreme values from near-zero
+        reference means (scRNA-seq sparsity artifact) are dampened toward zero, and
+        one-sided zeros become large-but-finite instead of ``±inf``. Has no effect on
+        the Mann-Whitney U p-value or FDR. Regardless of ``epsilon``, features
+        unexpressed in both groups report ``0.0`` (no change) rather than ``NaN``
+        (see Returns).
 
-        **Recommended usage:** For scRNA-seq CRISPRi/CRISPRa screens where many
-        genes are unexpressed in the reference group, start with ``epsilon=0.5``.
-        This provides modest dampening without substantially compressing fold changes
-        for well-expressed genes. For complete suppression of the sparsity artifact,
-        combine with a ``min_mean_expression`` pre-filter on the reference group —
-        ``epsilon`` alone cannot eliminate low p-values arising from per-cell
-        distributional shifts in near-zero genes.
+        Default ``1e-9`` acts as a tiny finite-guard so the output contains no
+        ``±inf`` by default. Pass ``epsilon=0.0`` to recover the legacy behaviour
+        where one-sided zeros yield ``±inf``. For stronger dampening of the sparsity artifact in scRNA-seq
+        CRISPRi/CRISPRa screens, larger values (e.g. ``0.5``) trade fold-change
+        fidelity for floor suppression; prefer combining the tiny default with
+        ``cpm_filter`` to remove the noise floor outright.
 
         Must be non-negative. Raises :class:`ValueError` if negative.
+    cpm_filter:
+        Optional counts-per-million (CPM) floor filter. ``None`` (default) disables
+        it. When set to a threshold ``T``, a ``(target, feature)`` row is **dropped**
+        from the output when the gene's pooled (bulk) CPM is ``<= T`` in **both** the
+        target group and the reference (kept if ``target_cpm > T`` **or**
+        ``ref_cpm > T``). The pooled CPM is ``Σcounts_gene / Σcounts_all * 1e6`` per
+        group, computed on a separate internal CPM view (counts are recovered via
+        ``expm1`` when ``is_log1p``); the reported ``target_mean``/``ref_mean`` stay
+        in native count space — the output is never normalised. Because the CPM is a
+        ratio it is scale-invariant, so ``T`` means the same regardless of how the
+        input was normalised. The drop is independent of the Mann-Whitney U result,
+        and **FDR is corrected over the surviving genes only** (the filter changes
+        the multiple-testing universe). A negative ``T`` keeps everything. Emits a
+        :class:`UserWarning` if the data contains negative values (CPM assumes
+        non-negative expression).
+
+        ``T = 5`` is a reasonable starting point, but the optimal threshold is
+        dataset-dependent (it tracks the separation between the noise floor and
+        genuinely expressed genes); inspect the per-gene CPM distribution of your
+        data and tune ``T`` empirically rather than relying on a fixed default.
     **kwargs:
         Mode-specific keyword arguments:
 
@@ -297,6 +362,14 @@ def pdex(
 
     log.info("is_log1p=%s, geometric_mean=%s", is_log1p, geometric_mean)
 
+    if cpm_filter is not None and _x_has_negative(adata.X):  # ty: ignore[invalid-argument-type]
+        msg = (
+            "cpm_filter is set but adata.X contains negative values; CPM assumes "
+            "non-negative expression, so the filter results may be meaningless."
+        )
+        log.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
+
     if mode == "ref":
         reference = kwargs.pop("reference", DEFAULT_REFERENCE)
         if kwargs:
@@ -313,6 +386,7 @@ def pdex(
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
             epsilon=epsilon,
+            cpm_filter=cpm_filter,
         )
     elif mode == "all":
         if kwargs:
@@ -327,6 +401,7 @@ def pdex(
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
             epsilon=epsilon,
+            cpm_filter=cpm_filter,
         )
     elif mode == "on_target":
         gene_col = kwargs.pop("gene_col", None)
@@ -348,6 +423,7 @@ def pdex(
             geometric_mean=geometric_mean,
             is_log1p=is_log1p,
             epsilon=epsilon,
+            cpm_filter=cpm_filter,
         )
     else:
         raise ValueError(f"Invalid mode: {mode}")
@@ -357,6 +433,78 @@ def pdex(
     return result
 
 
+def _cpm_keep_mask(
+    target_matrix: np.ndarray | csr_matrix,
+    ref_cpm: np.ndarray,
+    is_log1p: bool,
+    cpm_filter: float,
+) -> np.ndarray:
+    """Boolean keep mask: keep a gene iff target OR reference pooled CPM exceeds T.
+
+    ``ref_cpm`` is precomputed by the caller (it is constant within a comparison).
+    """
+    target_cpm = cpm_bulk(target_matrix, is_log1p)
+    return (target_cpm > cpm_filter) | (ref_cpm > cpm_filter)
+
+
+def _assemble_group_frame(
+    *,
+    target: str,
+    feature_names: np.ndarray | pd.Index,
+    target_bulk: np.ndarray,
+    ref_bulk: np.ndarray,
+    target_membership: int,
+    ref_membership: int,
+    lfc: np.ndarray,
+    pc: np.ndarray,
+    pvalue: np.ndarray,
+    statistic: np.ndarray,
+    keep: np.ndarray | None,
+) -> pl.DataFrame:
+    """Build one group's result frame, applying ``keep`` and correcting FDR over survivors.
+
+    When ``keep`` is ``None`` no filtering is applied (legacy behaviour). The FDR is
+    always computed over the rows that remain, so it reflects the post-filter
+    multiple-testing universe. An all-``False`` mask yields a height-0 frame with the
+    full schema (safe for :func:`polars.concat`).
+    """
+    feature = np.asarray(feature_names)
+    target_mean = np.asarray(target_bulk).ravel()
+    ref_mean = np.asarray(ref_bulk).ravel()
+    lfc = np.asarray(lfc).ravel()
+    pc = np.asarray(pc).ravel()
+    pvalue = np.asarray(pvalue).ravel()
+    statistic = np.asarray(statistic).ravel()
+
+    if keep is not None:
+        feature = feature[keep]
+        target_mean = target_mean[keep]
+        ref_mean = ref_mean[keep]
+        lfc = lfc[keep]
+        pc = pc[keep]
+        pvalue = pvalue[keep]
+        statistic = statistic[keep]
+
+    fdr = false_discovery_control(pvalue) if pvalue.size else np.empty(0, dtype=float)
+
+    return pl.DataFrame(
+        {
+            "target": np.full(feature.shape[0], target),
+            "feature": feature,
+            "target_mean": target_mean,
+            "ref_mean": ref_mean,
+            "target_membership": np.full(feature.shape[0], target_membership),
+            "ref_membership": np.full(feature.shape[0], ref_membership),
+            "fold_change": lfc,
+            "log2_fold_change": lfc,
+            "percent_change": pc,
+            "p_value": pvalue,
+            "statistic": statistic,
+            "fdr": fdr,
+        }
+    )
+
+
 def _pdex_ref(
     adata: ad.AnnData,
     groupby: str,
@@ -364,6 +512,7 @@ def _pdex_ref(
     geometric_mean: bool = True,
     is_log1p: bool = False,
     epsilon: float = 0.0,
+    cpm_filter: float | None = None,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups (excluding reference)", len(unique_groups) - 1)
@@ -375,6 +524,9 @@ def _pdex_ref(
     ref_matrix = _isolate_matrix(adata, ref_mask)
     ref_bulk = pseudobulk(ref_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p)
     ref_membership = ref_mask.size
+
+    # Reference pooled CPM is constant across target groups (CPM view, filter only)
+    ref_cpm = cpm_bulk(ref_matrix, is_log1p) if cpm_filter is not None else None
 
     # Either sparse_column_index or ref_matrix
     ref_data = (
@@ -405,24 +557,26 @@ def _pdex_ref(
 
         mwu_statistic = mwu_result.statistic
         mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
-        mwu_fdr = false_discovery_control(mwu_pvalue)
+
+        if cpm_filter is None:
+            keep = None
+        else:
+            assert ref_cpm is not None  # set whenever cpm_filter is not None
+            keep = _cpm_keep_mask(group_matrix, ref_cpm, is_log1p, cpm_filter)
 
         results.append(
-            pl.DataFrame(
-                {
-                    "target": group_name,
-                    "feature": feature_names,
-                    "target_mean": np.asarray(group_bulk).ravel(),
-                    "ref_mean": np.asarray(ref_bulk).ravel(),
-                    "target_membership": group_mask.size,
-                    "ref_membership": ref_membership,
-                    "fold_change": lfc,
-                    "log2_fold_change": lfc,
-                    "percent_change": pc,
-                    "p_value": mwu_pvalue,
-                    "statistic": mwu_statistic,
-                    "fdr": mwu_fdr,
-                }
+            _assemble_group_frame(
+                target=group_name,
+                feature_names=feature_names,
+                target_bulk=group_bulk,
+                ref_bulk=ref_bulk,
+                target_membership=group_mask.size,
+                ref_membership=ref_membership,
+                lfc=lfc,
+                pc=pc,
+                pvalue=mwu_pvalue,
+                statistic=mwu_statistic,
+                keep=keep,
             )
         )
     return pl.concat(results)
@@ -434,6 +588,7 @@ def _pdex_all(
     geometric_mean: bool = True,
     is_log1p: bool = False,
     epsilon: float = 0.0,
+    cpm_filter: float | None = None,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
@@ -468,24 +623,26 @@ def _pdex_all(
 
         mwu_statistic = mwu_result.statistic
         mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
-        mwu_fdr = false_discovery_control(mwu_pvalue)
+
+        if cpm_filter is None:
+            keep = None
+        else:
+            rest_cpm = cpm_bulk(rest_matrix, is_log1p)
+            keep = _cpm_keep_mask(group_matrix, rest_cpm, is_log1p, cpm_filter)
 
         results.append(
-            pl.DataFrame(
-                {
-                    "target": group_name,
-                    "feature": feature_names,
-                    "target_mean": np.asarray(group_bulk).ravel(),
-                    "ref_mean": np.asarray(rest_bulk).ravel(),
-                    "target_membership": group_mask.size,
-                    "ref_membership": rest_mask.size,
-                    "fold_change": lfc,
-                    "log2_fold_change": lfc,
-                    "percent_change": pc,
-                    "p_value": mwu_pvalue,
-                    "statistic": mwu_statistic,
-                    "fdr": mwu_fdr,
-                }
+            _assemble_group_frame(
+                target=group_name,
+                feature_names=feature_names,
+                target_bulk=group_bulk,
+                ref_bulk=rest_bulk,
+                target_membership=group_mask.size,
+                ref_membership=rest_mask.size,
+                lfc=lfc,
+                pc=pc,
+                pvalue=mwu_pvalue,
+                statistic=mwu_statistic,
+                keep=keep,
             )
         )
 
@@ -500,6 +657,7 @@ def _pdex_on_target(
     geometric_mean: bool = True,
     is_log1p: bool = False,
     epsilon: float = 0.0,
+    cpm_filter: float | None = None,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     ref_index = _identify_reference_index(unique_groups, reference)
@@ -518,6 +676,11 @@ def _pdex_on_target(
     log.info(
         "on_target: evaluating expression of %d group/gene pairs",
         len(group_gene_map),
+    )
+
+    # Per-cell library sizes for the CPM filter (single-gene slices lack them)
+    lib_cell = (
+        _per_cell_library_sizes(adata, is_log1p) if cpm_filter is not None else None
     )
 
     rows = []
@@ -543,6 +706,20 @@ def _pdex_on_target(
             ref_col = ref_col.toarray()
         group_col = np.asarray(group_col).reshape(-1, 1)
         ref_col = np.asarray(ref_col).reshape(-1, 1)
+
+        # CPM filter: drop the row iff the target gene is <= T in both sides.
+        # Uses arithmetic-mean pooled CPM (consistent with cpm_bulk), independent
+        # of the geometric/arithmetic choice for the reported means.
+        if cpm_filter is not None:
+            assert lib_cell is not None  # set whenever cpm_filter is not None
+            target_arith = float(bulk_matrix_arithmetic(group_col, is_log1p)[0])
+            ref_arith = float(bulk_matrix_arithmetic(ref_col, is_log1p)[0])
+            t_lib = float(lib_cell[group_mask].mean()) if group_mask.size else 0.0
+            r_lib = float(lib_cell[ref_mask].mean()) if ref_mask.size else 0.0
+            target_cpm = target_arith / t_lib * 1e6 if t_lib > 0 else 0.0
+            ref_cpm = ref_arith / r_lib * 1e6 if r_lib > 0 else 0.0
+            if not (target_cpm > cpm_filter or ref_cpm > cpm_filter):
+                continue
 
         target_mean = float(
             pseudobulk(group_col, geometric_mean=geometric_mean, is_log1p=is_log1p)[0]
@@ -575,6 +752,26 @@ def _pdex_on_target(
                 "percent_change": pc,
                 "p_value": p_value,
                 "statistic": statistic,
+            }
+        )
+
+    if not rows:
+        # No surviving rows (e.g. every target gene filtered out, or no group
+        # mapped to a gene): return a height-0 frame with the full schema.
+        return pl.DataFrame(
+            schema={
+                "target": pl.Utf8,
+                "feature": pl.Utf8,
+                "target_mean": pl.Float64,
+                "ref_mean": pl.Float64,
+                "target_membership": pl.Int64,
+                "ref_membership": pl.Int64,
+                "fold_change": pl.Float64,
+                "log2_fold_change": pl.Float64,
+                "percent_change": pl.Float64,
+                "p_value": pl.Float64,
+                "statistic": pl.Float64,
+                "fdr": pl.Float64,
             }
         )
 
