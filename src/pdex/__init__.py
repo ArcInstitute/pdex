@@ -1,6 +1,6 @@
 import logging
 import warnings
-from typing import Literal
+from typing import Any, Literal, cast
 
 import anndata as ad
 import numpy as np
@@ -159,11 +159,14 @@ def _x_has_negative(x: np.ndarray | csr_matrix | None) -> bool:
     """
     if x is None:
         return False
-    if isinstance(x, csr_matrix):
-        return bool(x.data.size and (x.data < 0).any())
-    if isinstance(x, np.ndarray):
-        return bool(x.size and (x < 0).any())
-    arr = np.asarray(x[: min(1000, x.shape[0])])
+    sample = x
+    if not isinstance(sample, (np.ndarray, csr_matrix)):
+        sample_obj = cast(Any, sample)
+        sample = sample_obj[: min(1000, sample_obj.shape[0])]
+    if issparse(sample):
+        sample = csr_matrix(sample)
+        return bool(sample.data.size and (sample.data < 0).any())
+    arr = np.asarray(sample)
     return bool(arr.size and (arr < 0).any())
 
 

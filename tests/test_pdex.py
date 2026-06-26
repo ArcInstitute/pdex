@@ -1,9 +1,11 @@
 """Integration tests for pdex() and _pdex_ref()."""
 
+import anndata as ad
 import numpy as np
 import polars as pl
 import pytest
 from scipy import stats
+from scipy.sparse import csr_matrix
 
 from pdex import DEFAULT_REFERENCE, pdex
 
@@ -894,6 +896,48 @@ class TestCpmFilter:
             d["target_mean"].to_numpy(), s["target_mean"].to_numpy()
         )
 
+    def test_backed_sparse_matches_inmemory_sparse(
+        self, cpm_floor_adata_sparse, tmp_path
+    ):
+        """Backed sparse input supports cpm_filter and matches in-memory sparse."""
+        path = tmp_path / "cpm_floor_sparse.h5ad"
+        cpm_floor_adata_sparse.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r")
+
+        inmem = pdex(
+            cpm_floor_adata_sparse,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+        backed_result = pdex(
+            backed,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+
+        assert _pairs(inmem) == _pairs(backed_result)
+        i = inmem.sort(["target", "feature"])
+        b = backed_result.sort(["target", "feature"])
+        for col in [
+            "target_mean",
+            "ref_mean",
+            "fold_change",
+            "percent_change",
+            "p_value",
+            "statistic",
+            "fdr",
+        ]:
+            np.testing.assert_allclose(
+                i[col].to_numpy(),
+                b[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
     def test_log1p_kept_set_matches_raw(self, cpm_floor_adata):
         """CPM is computed on counts, so log1p input gives the same kept set."""
         log_adata = cpm_floor_adata.copy()
@@ -955,3 +999,16 @@ class TestCpmFilter:
         adata.X[0, 0] = -1.0
         with pytest.warns(UserWarning, match="negative values"):
             pdex(adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5)
+
+    def test_backed_sparse_negative_values_warn(self, cpm_floor_adata, tmp_path):
+        """The negative-value preflight handles backed sparse arrays."""
+        adata = cpm_floor_adata.copy()
+        adata.X[0, 0] = -0.5
+        adata.X = csr_matrix(adata.X)
+        path = tmp_path / "negative_sparse.h5ad"
+        adata.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r")
+
+        with pytest.warns(UserWarning, match="negative values"):
+            with pytest.raises(ValueError, match="Sparse MWU requires non-negative"):
+                pdex(backed, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5)
