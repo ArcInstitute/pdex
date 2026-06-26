@@ -58,7 +58,7 @@ Unexpected `**kwargs` for any mode trigger a `UserWarning`.
 | ---------------------- | ------------------------------------------------------------------------------------------------------- |
 | `src/pdex/__init__.py` | `pdex()` entry point and full pipeline logic                                                            |
 | `src/pdex/_math.py`    | Numba JIT-compiled `fold_change()`, `percent_change()`, and `mwu()` wrappers; `pseudobulk()` dispatcher |
-| `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_detect_is_log1p()` heuristic    |
+| `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_available_cpus()` — affinity-aware CPU count (respects cgroup/SLURM limits); `_detect_is_log1p()` heuristic |
 
 ### Performance Design
 

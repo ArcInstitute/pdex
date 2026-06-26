@@ -1,4 +1,5 @@
 import logging
+import multiprocessing as mp
 import os
 
 import numba
@@ -8,16 +9,28 @@ from scipy.sparse import issparse
 log = logging.getLogger(__name__)
 
 
+def _available_cpus() -> int:
+    """Return the number of CPUs the current process is allowed to use.
+
+    Uses ``os.sched_getaffinity`` on Linux so SLURM/cgroup/taskset limits are
+    respected; falls back to ``multiprocessing.cpu_count`` on macOS/Windows where
+    that API is unavailable (those platforms typically run locally without cgroup
+    caps). This mirrors how Numba derives ``NUMBA_NUM_THREADS``, so the value never
+    exceeds Numba's cap — unlike ``os.cpu_count()``, which reports every physical
+    CPU even when affinity or a cgroup restricts the process to far fewer, causing
+    ``numba.set_num_threads`` to raise.
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return mp.cpu_count()
+
+
 def set_numba_threadpool(threads: int = 0):
-    available_threads = os.cpu_count()
-    if available_threads is None:
-        available_threads = 1
+    available_threads = _available_cpus()
 
     if threads == 0:
-        if not available_threads:
-            threads = 1
-        else:
-            threads = available_threads
+        threads = available_threads
     else:
         threads = min(threads, available_threads)
 
