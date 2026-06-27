@@ -80,8 +80,16 @@ results = pdex(
 | `is_log1p`       | `bool \| None` | `None`            | Whether data is log1p-transformed. Auto-detected if `None` |
 | `geometric_mean` | `bool`         | `True`            | Use geometric mean for pseudobulk (vs arithmetic)          |
 | `as_pandas`      | `bool`         | `False`           | Return a pandas DataFrame instead of Polars                |
+| `epsilon`        | `float`        | `1e-9`            | Pseudocount used for `log2_fold_change` and `percent_change`; pass `0.0` for legacy one-sided `±inf` values |
+| `cpm_filter`     | `float \| None` | `None`           | Optional pooled-CPM floor filter; drops rows where both target and reference CPM are at or below the threshold |
 | `reference`      | `str`          | `"non-targeting"` | Reference group name (modes: `ref`, `on_target`)           |
 | `gene_col`       | `str`          | —                 | Column mapping groups to target genes (mode: `on_target`)  |
+
+### CPM filter
+
+`cpm_filter` is an opt-in floor filter. When set to a threshold `T`, a `(target, feature)` row is dropped only when the gene's pooled CPM is `<= T` in both the target group and the reference group. Rows are kept when either side has CPM `> T`.
+
+The CPM view is used only for filtering: reported means, fold changes, MWU statistics, and p-values are still computed from the original expression scale. When `is_log1p=True`, counts are recovered with `expm1` before CPM is computed. FDR is corrected over the surviving genes only.
 
 ## Output
 
@@ -96,8 +104,8 @@ Returns a Polars DataFrame (or pandas if `as_pandas=True`) with one row per (gro
 | `target_membership` | Number of cells in the target group                |
 | `ref_membership`    | Number of cells in the reference                   |
 | `fold_change`       | **Deprecated alias** for `log2_fold_change` (identical values). Will be removed in pdex 0.3.0. |
-| `log2_fold_change`  | log2(target_mean / ref_mean). Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
-| `percent_change`    | (target_mean - ref_mean) / ref_mean. Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
+| `log2_fold_change`  | log2((target_mean + epsilon) / (ref_mean + epsilon)). With default `epsilon=1e-9`, one-sided zeros are large finite values; with `epsilon=0.0`, one-sided zeros yield `±inf`. Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
+| `percent_change`    | (target_mean - ref_mean) / (ref_mean + epsilon). With default `epsilon=1e-9`, zero-reference cases are finite; with `epsilon=0.0`, a zero reference with nonzero target yields `+inf`. Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
 | `p_value`           | Mann-Whitney U p-value                             |
 | `statistic`         | Mann-Whitney U statistic                           |
-| `fdr`               | FDR-corrected p-value (per-group, across genes). For `on_target` mode, this is applied across all groups.    |
+| `fdr`               | FDR-corrected p-value (per-group, across genes). For `on_target` mode, this is applied across all groups. When `cpm_filter` is set, FDR is corrected over surviving genes only. |

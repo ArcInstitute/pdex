@@ -1,9 +1,11 @@
 """Integration tests for pdex() and _pdex_ref()."""
 
+import anndata as ad
 import numpy as np
 import polars as pl
 import pytest
 from scipy import stats
+from scipy.sparse import csr_matrix
 
 from pdex import DEFAULT_REFERENCE, pdex
 
@@ -143,11 +145,11 @@ class TestPdexRefMode:
         result = pdex(small_adata, groupby="guide", is_log1p=False, epsilon=0.5)
         assert isinstance(result, pl.DataFrame)
 
-    def test_epsilon_zero_matches_default(self, small_adata):
-        """epsilon=0.0 produces identical results to omitting the parameter."""
+    def test_default_epsilon_is_tiny_finite_guard(self, small_adata):
+        """Omitting epsilon uses the 1e-9 default (not 0.0)."""
         default_result = pdex(small_adata, groupby="guide", is_log1p=False)
         explicit_result = pdex(
-            small_adata, groupby="guide", is_log1p=False, epsilon=0.0
+            small_adata, groupby="guide", is_log1p=False, epsilon=1e-9
         )
         assert isinstance(default_result, pl.DataFrame)
         assert isinstance(explicit_result, pl.DataFrame)
@@ -736,3 +738,277 @@ class TestUnexpressedInBothGroups:
         # log2(0 / ref) -> -inf; percent_change (0 - ref) / ref -> -1.0
         assert np.isneginf(gene0["log2_fold_change"].to_numpy()).all()
         np.testing.assert_allclose(gene0["percent_change"].to_numpy(), -1.0)
+
+
+def _pairs(df) -> set:
+    """Set of (target, feature) tuples in a result frame."""
+    return set(zip(df["target"].to_list(), df["feature"].to_list()))
+
+
+class TestCpmFilter:
+    """Tests for the cpm_filter (bulk-CPM floor) parameter."""
+
+    def test_both_sides_below_threshold_dropped(self, cpm_floor_adata):
+        """gene_4 (zero in every group) is dropped from the output."""
+        result = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        assert "gene_4" not in result["feature"].to_list()
+
+    def test_one_side_above_threshold_kept(self, cpm_floor_adata):
+        """gene_3 (zero in ref, expressed in target) survives via the OR rule."""
+        result = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        assert "gene_3" in result["feature"].to_list()
+
+    def test_negative_threshold_keeps_everything(self, cpm_floor_adata):
+        """A negative threshold keeps all genes (CPM >= 0 > T)."""
+        unfiltered = pdex(cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False)
+        result = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=-1
+        )
+        assert _pairs(result) == _pairs(unfiltered)
+
+    def test_zero_threshold_strict_drops_only_exact_zero(self, cpm_floor_adata):
+        """T=0 drops genes whose pooled CPM is exactly 0 (strict >), keeps the rest."""
+        result = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=0.0
+        )
+        features = set(result["feature"].to_list())
+        assert "gene_4" not in features  # cpm 0, not > 0 -> dropped
+        assert {"gene_0", "gene_1", "gene_2", "gene_3"} <= features
+
+    def test_none_matches_unfiltered(self, cpm_floor_adata):
+        """cpm_filter=None is identical to omitting it."""
+        omitted = pdex(cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False)
+        explicit = pdex(
+            cpm_floor_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=None,
+        )
+        assert isinstance(omitted, pl.DataFrame)
+        assert isinstance(explicit, pl.DataFrame)
+        assert omitted.equals(explicit)
+
+    def test_filtered_is_subset_with_unchanged_values(self, cpm_floor_adata):
+        """Surviving rows keep their exact means/p-values; only the row set shrinks."""
+        unfiltered = pdex(cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False)
+        filtered = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        assert _pairs(filtered) < _pairs(unfiltered)  # strict subset
+        # Surviving rows keep their exact target_mean / p_value (look up by key)
+        full = {
+            (t, f): (tm, pv)
+            for t, f, tm, pv in zip(
+                unfiltered["target"].to_list(),
+                unfiltered["feature"].to_list(),
+                unfiltered["target_mean"].to_list(),
+                unfiltered["p_value"].to_list(),
+            )
+        }
+        for t, f, tm, pv in zip(
+            filtered["target"].to_list(),
+            filtered["feature"].to_list(),
+            filtered["target_mean"].to_list(),
+            filtered["p_value"].to_list(),
+        ):
+            np.testing.assert_allclose(tm, full[(t, f)][0])
+            np.testing.assert_allclose(pv, full[(t, f)][1])
+
+    def test_scale_invariant_kept_set(self, cpm_floor_adata):
+        """Uniformly rescaling counts does not change which rows survive."""
+        scaled = cpm_floor_adata.copy()
+        scaled.X = scaled.X * 100.0
+        base = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        rescaled = pdex(
+            scaled, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        assert _pairs(base) == _pairs(rescaled)
+
+    def test_no_inf_with_default_epsilon(self, cpm_floor_adata):
+        """Filter + default epsilon (1e-9) leaves no inf/nan in the LFC columns."""
+        result = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        for col in ("log2_fold_change", "percent_change"):
+            vals = result[col].to_numpy()
+            assert not np.isinf(vals).any(), col
+            assert not np.isnan(vals).any(), col
+
+    def test_epsilon_zero_still_allows_one_sided_inf(self, cpm_floor_adata):
+        """With epsilon=0, a surviving one-sided zero (gene_3) keeps its +inf LFC."""
+        result = pdex(
+            cpm_floor_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=5,
+            epsilon=0.0,
+        )
+        gene3 = result.filter(pl.col("feature") == "gene_3")
+        # gene_3: ref_mean 0, target_mean > 0 -> log2(t/0) = +inf
+        assert np.isposinf(gene3["log2_fold_change"].to_numpy()).all()
+
+    def test_fdr_over_survivors(self, cpm_floor_adata):
+        """FDR is recomputed over surviving genes, not the full gene set."""
+        filtered = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        a = filtered.filter(pl.col("target") == "A")
+        # FDR matches BH over exactly the surviving p-values
+        recomputed = stats.false_discovery_control(a["p_value"].to_numpy())
+        np.testing.assert_allclose(a["fdr"].to_numpy(), recomputed)
+
+        # ... and differs from BH over the full (unfiltered) p-value set
+        unfiltered = pdex(cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False)
+        a_full = unfiltered.filter(pl.col("target") == "A")
+        full_fdr = dict(
+            zip(
+                a_full["feature"].to_list(),
+                stats.false_discovery_control(a_full["p_value"].to_numpy()),
+            )
+        )
+        surviving_full = np.array([full_fdr[f] for f in a["feature"].to_list()])
+        assert not np.allclose(a["fdr"].to_numpy(), surviving_full)
+
+    def test_sparse_matches_dense(self, cpm_floor_adata, cpm_floor_adata_sparse):
+        """Sparse input yields the same kept set and values as dense."""
+        dense = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        sparse = pdex(
+            cpm_floor_adata_sparse,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+        assert _pairs(dense) == _pairs(sparse)
+        d = dense.sort(["target", "feature"])
+        s = sparse.sort(["target", "feature"])
+        np.testing.assert_allclose(
+            d["target_mean"].to_numpy(), s["target_mean"].to_numpy()
+        )
+
+    def test_backed_sparse_matches_inmemory_sparse(
+        self, cpm_floor_adata_sparse, tmp_path
+    ):
+        """Backed sparse input supports cpm_filter and matches in-memory sparse."""
+        path = tmp_path / "cpm_floor_sparse.h5ad"
+        cpm_floor_adata_sparse.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r")
+
+        inmem = pdex(
+            cpm_floor_adata_sparse,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+        backed_result = pdex(
+            backed,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+
+        assert _pairs(inmem) == _pairs(backed_result)
+        i = inmem.sort(["target", "feature"])
+        b = backed_result.sort(["target", "feature"])
+        for col in [
+            "target_mean",
+            "ref_mean",
+            "fold_change",
+            "percent_change",
+            "p_value",
+            "statistic",
+            "fdr",
+        ]:
+            np.testing.assert_allclose(
+                i[col].to_numpy(),
+                b[col].to_numpy(),
+                rtol=1e-6,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+    def test_log1p_kept_set_matches_raw(self, cpm_floor_adata):
+        """CPM is computed on counts, so log1p input gives the same kept set."""
+        log_adata = cpm_floor_adata.copy()
+        log_adata.X = np.log1p(log_adata.X)
+        raw = pdex(
+            cpm_floor_adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5
+        )
+        logged = pdex(
+            log_adata, groupby="guide", mode="ref", is_log1p=True, cpm_filter=5
+        )
+        assert _pairs(raw) == _pairs(logged)
+
+    def test_all_mode_drops_floor(self, cpm_floor_adata):
+        """In 1-vs-rest mode, the floor gene is dropped for every group."""
+        result = pdex(
+            cpm_floor_adata, groupby="guide", mode="all", is_log1p=False, cpm_filter=5
+        )
+        assert "gene_4" not in result["feature"].to_list()
+        # every group still present (they retain expressed genes)
+        assert set(result["target"].to_list()) == {"non-targeting", "A", "B"}
+
+    def test_on_target_drops_floor_group(self, cpm_floor_adata):
+        """on_target: a group whose target gene is a floor gene is dropped."""
+        adata = cpm_floor_adata.copy()
+        adata.obs["target_gene"] = (
+            adata.obs["guide"].map(
+                {"non-targeting": "gene_0", "A": "gene_3", "B": "gene_4"}
+            )
+        ).astype(object)
+        result = pdex(
+            adata,
+            groupby="guide",
+            mode="on_target",
+            gene_col="target_gene",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+        # A targets gene_3 (expressed) -> kept; B targets gene_4 (floor) -> dropped
+        assert result["target"].to_list() == ["A"]
+        assert result["feature"].to_list() == ["gene_3"]
+        # FDR over the single surviving row
+        assert (result["fdr"] >= 0).all() and (result["fdr"] <= 1).all()
+
+    def test_all_dropped_returns_empty_with_schema(self, cpm_floor_adata):
+        """A threshold above every gene's CPM yields a height-0 frame, full schema."""
+        result = pdex(
+            cpm_floor_adata,
+            groupby="guide",
+            mode="ref",
+            is_log1p=False,
+            cpm_filter=1e12,
+        )
+        assert result.height == 0
+        assert set(result.columns) == EXPECTED_COLUMNS
+
+    def test_negative_values_warn(self, cpm_floor_adata):
+        """cpm_filter on data with negative values emits a UserWarning."""
+        adata = cpm_floor_adata.copy()
+        adata.X[0, 0] = -1.0
+        with pytest.warns(UserWarning, match="negative values"):
+            pdex(adata, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5)
+
+    def test_backed_sparse_negative_values_warn(self, cpm_floor_adata, tmp_path):
+        """The negative-value preflight handles backed sparse arrays."""
+        adata = cpm_floor_adata.copy()
+        adata.X[0, 0] = -0.5
+        adata.X = csr_matrix(adata.X)
+        path = tmp_path / "negative_sparse.h5ad"
+        adata.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r")
+
+        with pytest.warns(UserWarning, match="negative values"):
+            with pytest.raises(ValueError, match="Sparse MWU requires non-negative"):
+                pdex(backed, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5)

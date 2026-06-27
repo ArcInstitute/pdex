@@ -36,13 +36,13 @@ uv run ty check
 
 ### Core Pipeline (`src/pdex/__init__.py`)
 
-The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, epsilon, **kwargs)`, which:
+The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, epsilon, cpm_filter, **kwargs)`, which:
 
 1. Validates the `groupby` column in `adata.obs`
 2. Extracts unique groups (filters NaN and empty strings)
 3. Identifies a reference group (defaults to `"non-targeting"` in `"ref"` and `"on_target"` modes)
 4. For each non-reference group, slices the expression matrix, computes pseudobulk (mean), fold change, percent change, and Mann-Whitney U statistic vs the reference
-5. Applies per-group FDR correction (scipy) and returns a Polars DataFrame (or pandas if `as_pandas=True`)
+5. Optionally drops genes below the `cpm_filter` floor (see below), then applies FDR correction over the surviving genes (scipy) and returns a Polars DataFrame (or pandas if `as_pandas=True`)
 
 Three modes:
 
@@ -52,12 +52,28 @@ Three modes:
 
 Unexpected `**kwargs` for any mode trigger a `UserWarning`.
 
+### CPM floor filter (`cpm_filter`)
+
+`cpm_filter` (default `None` = off) is an opt-in **two-view** floor filter. A native
+(unnormalized) view drives the reported means, LFC, MWU, and output; a separate **CPM
+view** drives only the keep/drop decision, so the output is never normalized. Per group
+per gene the pooled (bulk) CPM is `Σcounts_gene / Σcounts_all * 1e6` (computed on counts —
+`expm1` is applied first when `is_log1p`). A `(target, gene)` row is **dropped** when the
+gene's CPM is `<= T` in **both** the target and the reference (kept iff `target_cpm > T`
+**or** `ref_cpm > T`; strict `>`, negative `T` keeps everything). The CPM ratio is
+scale-invariant, so `T` means the same regardless of input normalization. The drop is
+independent of the MWU result, and **FDR is corrected over the surviving genes only**.
+Applies to all three modes (in `on_target`, a group whose target gene is a floor gene is
+dropped). Emits a `UserWarning` if the data contains negative values. `T = 5` is a
+reasonable starting point, but the optimal threshold is dataset-dependent and should be
+checked empirically (inspect the per-gene CPM distribution).
+
 ### Key Files
 
 | File                   | Role                                                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------------------------------- |
 | `src/pdex/__init__.py` | `pdex()` entry point and full pipeline logic                                                            |
-| `src/pdex/_math.py`    | Numba JIT-compiled `fold_change()`, `percent_change()`, and `mwu()` wrappers; `pseudobulk()` dispatcher |
+| `src/pdex/_math.py`    | Numba JIT-compiled `fold_change()`, `percent_change()`, and `mwu()` wrappers; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter |
 | `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_available_cpus()` — affinity-aware CPU count (respects cgroup/SLURM limits); `_detect_is_log1p()` heuristic |
 
 ### Performance Design
@@ -80,14 +96,16 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `target_membership` | int   | Number of cells in the target group                                   |
 | `ref_membership`    | int   | Number of cells in the reference                                      |
 | `fold_change`       | float | **Deprecated** alias for `log2_fold_change` (identical values). Retained for one release; emits a `FutureWarning` on every `pdex(...)` call and will be removed in pdex 0.3.0. |
-| `log2_fold_change`  | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means. Features unexpressed in both groups (`target_mean == ref_mean == 0`, only with `epsilon == 0`) give `0/0`, defined as `0.0` (not `NaN`); one-sided zeros still yield `±inf`. |
-| `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means. Features unexpressed in both groups (`target_mean == ref_mean == 0`, only with `epsilon == 0`) give `0/0`, defined as `0.0` (not `NaN`); a zero reference with nonzero target still yields `+inf`. |
+| `log2_fold_change`  | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means. `epsilon` defaults to `1e-9` (finite-guard), so by default there are no `±inf`/`NaN`: one-sided zeros become large-but-finite and `0/0` is `0.0`. With `epsilon == 0`, `0/0` is still defined as `0.0` (not `NaN`) but one-sided zeros yield `±inf`. |
+| `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means. With the default `epsilon=1e-9` there are no non-finite values; with `epsilon == 0`, `0/0` is `0.0` (not `NaN`) and a zero reference with nonzero target yields `+inf`. |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |
 | `statistic`         | float | Mann-Whitney U statistic                                              |
-| `fdr`               | float | FDR-corrected p-value, applied per-group across genes. For `on_target` mode, applied across all groups.                 |
+| `fdr`               | float | FDR-corrected p-value, applied per-group across genes. For `on_target` mode, applied across all groups. When `cpm_filter` is set, the correction is over the **surviving** genes only.                 |
 
 `target_mean` and `ref_mean` are always in natural (count) space regardless of `is_log1p` or `geometric_mean`.
 FDR is corrected within each group (across genes) for `ref` and `all` modes. For `on_target` mode, it is applied across all resulting p-values.
+`epsilon` defaults to `1e-9`; pass `epsilon=0.0` to recover legacy `±inf` for one-sided zeros.
+When `cpm_filter` is set, genes failing the floor are **dropped**, so the output has fewer than `n_targets × n_genes` rows (a fully-filtered comparison yields a height-0 frame with the full schema).
 
 ### Public API (`__all__`)
 

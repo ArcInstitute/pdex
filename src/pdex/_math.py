@@ -105,6 +105,30 @@ def bulk_matrix_geometric(
     return _expm1_vec(log_mean)
 
 
+def cpm_bulk(matrix: np.ndarray | csr_matrix, is_log1p: bool) -> np.ndarray:
+    """Per-gene pooled (bulk) counts-per-million for one group's cell-by-gene matrix.
+
+    Used only for the ``cpm_filter`` keep/drop decision — never for the reported
+    means. The arithmetic mean is taken in natural (count) space (back-transformed
+    via ``expm1`` when ``is_log1p``, reusing :func:`bulk_matrix_arithmetic`), then
+
+        cpm[gene] = gene_mean[gene] / sum(gene_means) * 1e6
+
+    which equals the pooled ``Σcounts_gene / Σcounts_all * 1e6`` (the per-cell count
+    cancels). This is **scale-invariant**: a uniform rescaling of the input cancels
+    in the ratio, so a threshold in CPM means the same regardless of how the input
+    was normalised.
+
+    A group whose total is zero (empty or all-zero slice) gets a denominator of 1.0
+    so every gene's CPM is ``0.0`` (and is dropped by any positive threshold) rather
+    than ``inf``/``nan``. Returns a flat float64 array of length ``n_genes``.
+    """
+    gene_means = bulk_matrix_arithmetic(matrix, is_log1p)
+    total = float(gene_means.sum())
+    denom = total if total != 0.0 else 1.0
+    return gene_means / denom * 1e6
+
+
 @nb.njit(parallel=True)
 def log2_fold_change(x: np.ndarray, y: np.ndarray, epsilon: float = 0.0) -> np.ndarray:
     """Calculates the log2-fold change between two arrays.

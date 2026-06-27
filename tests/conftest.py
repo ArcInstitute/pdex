@@ -65,6 +65,46 @@ def on_target_adata_sparse(on_target_adata):
 
 
 @pytest.fixture
+def cpm_floor_adata(rng):
+    """AnnData purpose-built for the cpm_filter: 3 groups, 10 cells each, 5 genes.
+
+    - gene_0..2: well expressed in every group (high CPM, always kept).
+    - gene_3: one-sided — zero in the non-targeting reference, expressed in A and B
+      (kept by the OR rule; produces a one-sided-zero LFC).
+    - gene_4: pure floor — zero in every group (dropped whenever both sides <= T).
+    """
+    n_per = 10
+    groups = ["non-targeting", "A", "B"]
+    obs_groups = np.repeat(groups, n_per)
+    n_cells = len(obs_groups)
+    n_genes = 5
+
+    X = rng.poisson(lam=5, size=(n_cells, n_genes)).astype(np.float64)
+    X[n_per : 2 * n_per, :3] += 3  # boost genes 0..2 in A
+    X[2 * n_per :, :3] += 6  # boost genes 0..2 in B
+
+    # gene_3: zero in reference, expressed in A and B (one-sided)
+    X[:n_per, 3] = 0.0
+    # gene_4: zero everywhere (pure floor)
+    X[:, 4] = 0.0
+
+    obs = pd.DataFrame(
+        {"guide": obs_groups},
+        index=np.array([f"cell_{i}" for i in range(n_cells)]),
+    )
+    var = pd.DataFrame(index=np.array([f"gene_{i}" for i in range(n_genes)]))
+    return ad.AnnData(X=X, obs=obs, var=var)
+
+
+@pytest.fixture
+def cpm_floor_adata_sparse(cpm_floor_adata):
+    """cpm_floor_adata with sparse CSR X matrix."""
+    adata = cpm_floor_adata.copy()
+    adata.X = csr_matrix(adata.X)
+    return adata
+
+
+@pytest.fixture
 def small_adata_log1p(small_adata):
     """small_adata with X replaced by log1p-transformed values."""
     adata = small_adata.copy()
