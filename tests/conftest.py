@@ -118,3 +118,48 @@ def small_adata_backed(small_adata, tmp_path):
     path = tmp_path / "test.h5ad"
     small_adata.write_h5ad(path)
     return ad.read_h5ad(path, backed="r")
+
+
+@pytest.fixture
+def multi_group_adata(rng):
+    """Synthetic AnnData for stress-testing 1-vs-rest across many uneven groups.
+
+    6 groups (sizes 1, 3, 7, 5, 2, 6 -> 24 cells), 8 genes. Most genes have
+    group-specific shifts; gene_6 is heavily tied (two distinct values) and
+    gene_7 is all-zero, exercising the degenerate (s_sq <= 0) MWU case.
+    """
+    group_sizes = {"g0": 1, "g1": 3, "g2": 7, "g3": 5, "g4": 2, "g5": 6}
+    offsets = {"g0": 0, "g1": 2, "g2": 0, "g3": 5, "g4": 0, "g5": -2}
+    n_genes = 8
+
+    obs_groups = np.concatenate(
+        [np.repeat(name, size) for name, size in group_sizes.items()]
+    )
+    n_cells = len(obs_groups)
+
+    X = rng.poisson(lam=5, size=(n_cells, n_genes)).astype(np.float64)
+    idx = 0
+    for name, size in group_sizes.items():
+        X[idx : idx + size] += offsets[name]
+        idx += size
+    X = np.clip(X, 0, None)
+
+    # gene_6: heavily tied (only two distinct values across all cells)
+    X[:, 6] = (rng.random(n_cells) > 0.5).astype(np.float64) * 3.0
+    # gene_7: zero everywhere (degenerate MWU case)
+    X[:, 7] = 0.0
+
+    obs = pd.DataFrame(
+        {"guide": obs_groups},
+        index=np.array([f"cell_{i}" for i in range(n_cells)]),
+    )
+    var = pd.DataFrame(index=np.array([f"gene_{i}" for i in range(n_genes)]))
+    return ad.AnnData(X=X, obs=obs, var=var)
+
+
+@pytest.fixture
+def multi_group_adata_sparse(multi_group_adata):
+    """multi_group_adata with sparse CSR X matrix."""
+    adata = multi_group_adata.copy()
+    adata.X = csr_matrix(adata.X)
+    return adata
