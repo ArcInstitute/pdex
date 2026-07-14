@@ -73,15 +73,19 @@ checked empirically (inspect the per-gene CPM distribution).
 | File                   | Role                                                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------------------------------- |
 | `src/pdex/__init__.py` | `pdex()` entry point and full pipeline logic                                                            |
-| `src/pdex/_math.py`    | Numba JIT-compiled `fold_change()`, `percent_change()`, and `mwu()` wrappers; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter |
+| `src/pdex/_math.py`    | Numba JIT-compiled `fold_change()`, `percent_change()`, and `mwu()`/`mwu_one_vs_rest()` wrappers over `numba-mwu`; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter; the `bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()` trio powering `"all"` mode's global-sum optimization |
 | `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_available_cpus()` — affinity-aware CPU count (respects cgroup/SLURM limits); `_detect_is_log1p()` heuristic |
 
 ### Performance Design
 
 - Numba JIT compilation accelerates per-cell/per-gene math (`fold_change`, `percent_change`, `_log1p_col_mean`, `_expm1_vec`)
-- `numba-mwu` (external dep) provides a Numba-accelerated Mann-Whitney U implementation
+- `numba-mwu` (external dep, `>=0.2.0`) provides Numba-accelerated Mann-Whitney U kernels for **both** the pairwise case (`mannwhitneyu_columns`/`mannwhitneyu_sparse`, used by `"ref"` and `"on_target"` modes) and the one-vs-rest case (`mannwhitneyu_one_vs_rest`/`_sparse`, used by `"all"` mode) — the one-vs-rest kernels originated in pdex and were upstreamed into `numba-mwu` since the optimization is domain-agnostic (see that package's CLAUDE.md for the algorithm).
 - Sparse CSR matrices are handled by reusing pre-computed non-targeting column indices to avoid redundant dense conversion
 - Parallelism is controlled via `threads` passed to `set_numba_threadpool()`
+- **`"all"` mode (1-vs-rest) is a one-shot computation, not a per-group loop over `numba-mwu`.** Because `group ∪ rest` is always the full (non-filtered) dataset regardless of which group is being tested, `_pdex_all` materializes the expression matrix exactly once (instead of once per group) and:
+  - Ranks each gene once across all cells via `mwu_one_vs_rest()` (`_math.py`, a thin wrapper over `numba_mwu.mannwhitneyu_one_vs_rest`/`_sparse`) and reduces to every group's rank-sum in the same pass, rather than re-ranking group+rest from scratch per group.
+  - Derives each group's "rest" pseudobulk and CPM algebraically as `(global_sum - group_sum) / n_rest` (`bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()`) instead of recomputing over a freshly sliced "rest" matrix.
+  - This turns `_pdex_all` from `O(n_groups × n_obs)` matrix I/O and ranking into ~`O(n_obs)` total, which matters most for screens with many groups (e.g. guides) and/or large cell counts.
 
 ### Output Schema
 
