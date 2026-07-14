@@ -14,11 +14,15 @@ from tqdm import tqdm
 
 from pdex._math import (
     bulk_matrix_arithmetic,
+    bulk_matrix_pre_transform_mean,
     cpm_bulk,
+    cpm_from_gene_means,
     log2_fold_change,
     mwu,
+    mwu_one_vs_rest,
     percent_change,
     pseudobulk,
+    pseudobulk_from_pre_mean,
 )
 
 from ._utils import _detect_is_log1p, set_numba_threadpool
@@ -594,43 +598,71 @@ def _pdex_all(
     cpm_filter: float | None = None,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
-    log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
+    n_groups = len(unique_groups)
+    log.info("Found %d groups for 1-vs-rest comparison", n_groups)
+
+    if n_groups < 2:
+        raise ValueError(f"mode='all' requires at least 2 groups, found {n_groups}")
 
     feature_names = adata.var_names
 
+    # group ∪ rest is always the full (non-filtered) dataset in "all" mode, so the
+    # matrix is materialized once here rather than once per group (see CLAUDE.md).
+    valid_mask = np.flatnonzero(unique_group_indices >= 0)
+    codes_valid = unique_group_indices[valid_mask]
+    n_valid = valid_mask.size
+
+    global_matrix = _isolate_matrix(adata, valid_mask)
+
+    # One-shot 1-vs-rest MWU: each gene is ranked once, not once per group.
+    mwu_result = mwu_one_vs_rest(global_matrix, codes_valid, n_groups)
+    all_statistic = mwu_result.statistic
+    all_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
+
+    # Pseudobulk pre-transform mean, computed once; "rest" is derived per group via
+    # (global_sum - group_sum) / n_rest rather than pseudobulk() on a fresh rest slice.
+    global_pre_mean = bulk_matrix_pre_transform_mean(
+        global_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+    )
+    global_pre_sum = global_pre_mean * n_valid
+
+    if cpm_filter is not None:
+        global_arith_mean = bulk_matrix_arithmetic(global_matrix, is_log1p)
+        global_arith_sum = global_arith_mean * n_valid
+
     results = []
     for group_idx in tqdm(
-        range(len(unique_groups)),
+        range(n_groups),
         desc="Running parallel differential expression (1 vs Rest)",
     ):
         group_name = unique_groups[group_idx]
 
-        group_mask = np.flatnonzero(unique_group_indices == group_idx)
-        rest_mask = np.flatnonzero(
-            (unique_group_indices != group_idx) & (unique_group_indices >= 0)
-        )
+        local_group_mask = np.flatnonzero(codes_valid == group_idx)
+        n_group = local_group_mask.size
+        n_rest = n_valid - n_group
 
-        group_matrix = _isolate_matrix(adata, group_mask)
-        rest_matrix = _isolate_matrix(adata, rest_mask)
+        group_matrix = global_matrix[local_group_mask]
 
-        group_bulk = pseudobulk(
+        group_pre_mean = bulk_matrix_pre_transform_mean(
             group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
-        rest_bulk = pseudobulk(
-            rest_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
-        )
+        rest_pre_mean = (global_pre_sum - group_pre_mean * n_group) / n_rest
+
+        group_bulk = pseudobulk_from_pre_mean(group_pre_mean, geometric_mean)
+        rest_bulk = pseudobulk_from_pre_mean(rest_pre_mean, geometric_mean)
 
         lfc = log2_fold_change(group_bulk, rest_bulk, epsilon)
         pc = percent_change(group_bulk, rest_bulk, epsilon)
-        mwu_result = mwu(group_matrix, rest_matrix)
 
-        mwu_statistic = mwu_result.statistic
-        mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
+        mwu_statistic = all_statistic[group_idx]
+        mwu_pvalue = all_pvalue[group_idx]
 
         if cpm_filter is None:
             keep = None
         else:
-            rest_cpm = cpm_bulk(rest_matrix, is_log1p)
+            group_arith_mean = bulk_matrix_arithmetic(group_matrix, is_log1p)
+            rest_arith_mean = (global_arith_sum - group_arith_mean * n_group) / n_rest
+            rest_cpm = cpm_from_gene_means(rest_arith_mean)
             keep = _cpm_keep_mask(group_matrix, rest_cpm, is_log1p, cpm_filter)
 
         results.append(
@@ -639,8 +671,8 @@ def _pdex_all(
                 feature_names=feature_names,
                 target_bulk=group_bulk,
                 ref_bulk=rest_bulk,
-                target_membership=group_mask.size,
-                ref_membership=rest_mask.size,
+                target_membership=n_group,
+                ref_membership=n_rest,
                 lfc=lfc,
                 pc=pc,
                 pvalue=mwu_pvalue,
