@@ -14,11 +14,15 @@ from tqdm import tqdm
 
 from pdex._math import (
     bulk_matrix_arithmetic,
+    bulk_matrix_pre_transform_mean,
     cpm_bulk,
+    cpm_from_gene_means,
     log2_fold_change,
     mwu,
+    mwu_one_vs_rest,
     percent_change,
     pseudobulk,
+    pseudobulk_from_pre_mean,
 )
 
 from ._utils import _detect_is_log1p, set_numba_threadpool
@@ -252,7 +256,7 @@ def pdex(
     epsilon:
         Pseudocount added to the **native (count-space) means** — the denominator
         (and, for ``log2_fold_change``, the numerator) — before computing
-        ``fold_change`` and ``percent_change``. It is never applied to the CPM view
+        ``log2_fold_change`` and ``percent_change``. It is never applied to the CPM view
         used by ``cpm_filter``. When ``epsilon > 0``, extreme values from near-zero
         reference means (scRNA-seq sparsity artifact) are dampened toward zero, and
         one-sided zeros become large-but-finite instead of ``±inf``. Has no effect on
@@ -303,7 +307,7 @@ def pdex(
     pl.DataFrame | pd.DataFrame
         One row per (group, feature) pair with columns: ``target``, ``feature``,
         ``target_mean``, ``ref_mean``, ``target_membership``, ``ref_membership``,
-        ``fold_change``, ``log2_fold_change``, ``percent_change``, ``p_value``,
+        ``log2_fold_change``, ``percent_change``, ``p_value``,
         ``statistic``, ``fdr``.
 
         ``target_mean`` and ``ref_mean`` are always in **natural (count) space**.
@@ -318,12 +322,8 @@ def pdex(
         and ``percent_change`` define this as ``0.0`` (no change) rather than
         ``NaN``. One-sided zeros still produce ``±inf``.
 
-        ``fold_change`` is a **deprecated** alias for ``log2_fold_change``
-        (identical values). It is retained for one release to ease migration
-        and will be removed in pdex 0.3.0. New code should read
-        ``log2_fold_change`` directly. A :class:`FutureWarning` is emitted
-        on every ``pdex(...)`` call.  The MWU ``p_value`` and
-        ``statistic`` are computed directly on the per-cell expression vectors.
+        The MWU ``p_value`` and ``statistic`` are computed directly on the
+        per-cell expression vectors.
 
         For ``mode="ref"``, the reference group itself is excluded from the output.
 
@@ -340,14 +340,6 @@ def pdex(
 
     if epsilon < 0:
         raise ValueError(f"epsilon must be non-negative, got {epsilon}")
-
-    warnings.warn(
-        "The `fold_change` column in pdex output is deprecated and will be "
-        "removed in pdex 0.3.0. Use `log2_fold_change` instead — it contains "
-        "the same values (`log2(target_mean / ref_mean)`).",
-        FutureWarning,
-        stacklevel=2,
-    )
 
     # Set the global threadpool for numba
     set_numba_threadpool(threads)
@@ -498,7 +490,6 @@ def _assemble_group_frame(
             "ref_mean": ref_mean,
             "target_membership": np.full(feature.shape[0], target_membership),
             "ref_membership": np.full(feature.shape[0], ref_membership),
-            "fold_change": lfc,
             "log2_fold_change": lfc,
             "percent_change": pc,
             "p_value": pvalue,
@@ -594,43 +585,79 @@ def _pdex_all(
     cpm_filter: float | None = None,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
-    log.info("Found %d groups for 1-vs-rest comparison", len(unique_groups))
+    n_groups = len(unique_groups)
+    log.info("Found %d groups for 1-vs-rest comparison", n_groups)
+
+    if n_groups < 2:
+        raise ValueError(f"mode='all' requires at least 2 groups, found {n_groups}")
 
     feature_names = adata.var_names
 
+    # group ∪ rest is always the full (non-filtered) dataset in "all" mode, so the
+    # matrix is materialized once here rather than once per group (see CLAUDE.md).
+    valid_mask = np.flatnonzero(unique_group_indices >= 0)
+    codes_valid = unique_group_indices[valid_mask]
+    n_valid = valid_mask.size
+
+    global_matrix = _isolate_matrix(adata, valid_mask)
+
+    # One-shot 1-vs-rest MWU: each gene is ranked once, not once per group.
+    mwu_result = mwu_one_vs_rest(global_matrix, codes_valid, n_groups)
+    all_statistic = mwu_result.statistic
+    all_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
+
+    # Pseudobulk pre-transform mean, computed once; "rest" is derived per group via
+    # (global_sum - group_sum) / n_rest rather than pseudobulk() on a fresh rest slice.
+    global_pre_mean = bulk_matrix_pre_transform_mean(
+        global_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+    )
+    global_pre_sum = global_pre_mean * n_valid
+
+    if cpm_filter is not None:
+        global_arith_mean = bulk_matrix_arithmetic(global_matrix, is_log1p)
+        global_arith_sum = global_arith_mean * n_valid
+
     results = []
     for group_idx in tqdm(
-        range(len(unique_groups)),
+        range(n_groups),
         desc="Running parallel differential expression (1 vs Rest)",
     ):
         group_name = unique_groups[group_idx]
 
-        group_mask = np.flatnonzero(unique_group_indices == group_idx)
-        rest_mask = np.flatnonzero(
-            (unique_group_indices != group_idx) & (unique_group_indices >= 0)
-        )
+        local_group_mask = np.flatnonzero(codes_valid == group_idx)
+        n_group = local_group_mask.size
+        n_rest = n_valid - n_group
 
-        group_matrix = _isolate_matrix(adata, group_mask)
-        rest_matrix = _isolate_matrix(adata, rest_mask)
+        group_matrix = global_matrix[local_group_mask]
 
-        group_bulk = pseudobulk(
+        group_pre_mean = bulk_matrix_pre_transform_mean(
             group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
-        rest_bulk = pseudobulk(
-            rest_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+        # Clip: rest_pre_mean is a mean of non-negative data, so it can never be
+        # legitimately negative. This guards against floating-point noise which can
+        # otherwise corrupt log2_fold_change/percent_change.
+        rest_pre_mean = np.clip(
+            (global_pre_sum - group_pre_mean * n_group) / n_rest, 0, None
         )
+
+        group_bulk = pseudobulk_from_pre_mean(group_pre_mean, geometric_mean)
+        rest_bulk = pseudobulk_from_pre_mean(rest_pre_mean, geometric_mean)
 
         lfc = log2_fold_change(group_bulk, rest_bulk, epsilon)
         pc = percent_change(group_bulk, rest_bulk, epsilon)
-        mwu_result = mwu(group_matrix, rest_matrix)
 
-        mwu_statistic = mwu_result.statistic
-        mwu_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
+        mwu_statistic = all_statistic[group_idx]
+        mwu_pvalue = all_pvalue[group_idx]
 
         if cpm_filter is None:
             keep = None
         else:
-            rest_cpm = cpm_bulk(rest_matrix, is_log1p)
+            group_arith_mean = bulk_matrix_arithmetic(group_matrix, is_log1p)
+            # Same floating-point-cancellation guard as rest_pre_mean above.
+            rest_arith_mean = np.clip(
+                (global_arith_sum - group_arith_mean * n_group) / n_rest, 0, None
+            )
+            rest_cpm = cpm_from_gene_means(rest_arith_mean)
             keep = _cpm_keep_mask(group_matrix, rest_cpm, is_log1p, cpm_filter)
 
         results.append(
@@ -639,8 +666,8 @@ def _pdex_all(
                 feature_names=feature_names,
                 target_bulk=group_bulk,
                 ref_bulk=rest_bulk,
-                target_membership=group_mask.size,
-                ref_membership=rest_mask.size,
+                target_membership=n_group,
+                ref_membership=n_rest,
                 lfc=lfc,
                 pc=pc,
                 pvalue=mwu_pvalue,
@@ -750,7 +777,6 @@ def _pdex_on_target(
                 "ref_mean": ref_mean,
                 "target_membership": group_mask.size,
                 "ref_membership": ref_membership,
-                "fold_change": lfc,
                 "log2_fold_change": lfc,
                 "percent_change": pc,
                 "p_value": p_value,
@@ -769,7 +795,6 @@ def _pdex_on_target(
                 "ref_mean": pl.Float64,
                 "target_membership": pl.Int64,
                 "ref_membership": pl.Int64,
-                "fold_change": pl.Float64,
                 "log2_fold_change": pl.Float64,
                 "percent_change": pl.Float64,
                 "p_value": pl.Float64,

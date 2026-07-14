@@ -4,6 +4,8 @@ from numba_mwu import (
     MannWhitneyUResult,
     SparseColumnIndex,
     mannwhitneyu_columns,
+    mannwhitneyu_one_vs_rest,
+    mannwhitneyu_one_vs_rest_sparse,
     mannwhitneyu_sparse,
 )
 from scipy.sparse import csr_matrix
@@ -84,6 +86,24 @@ def pseudobulk(
     return bulk_matrix_arithmetic(matrix, is_log1p=is_log1p)
 
 
+def _log1p_transformed_mean(
+    matrix: np.ndarray | csr_matrix, is_log1p: bool, axis=0
+) -> np.ndarray:
+    """The pre-``expm1`` intermediate that :func:`bulk_matrix_geometric` back-transforms.
+
+    This quantity is a plain mean, hence linear across row partitions: it can be
+    recovered for an unmaterialized subset of rows (e.g. "all rows except group G")
+    via ``(global_sum - subset_sum) / n_subset`` without re-reading those rows.
+    """
+    if is_log1p:
+        return np.array(matrix.mean(axis=axis)).flatten()
+    if isinstance(matrix, csr_matrix):
+        m = matrix.copy()
+        np.log1p(m.data, out=m.data)
+        return np.array(m.mean(axis=axis)).flatten()
+    return _log1p_col_mean(np.asarray(matrix, dtype=np.float64))
+
+
 def bulk_matrix_geometric(
     matrix: np.ndarray | csr_matrix, is_log1p: bool, axis=0
 ) -> np.ndarray:
@@ -94,15 +114,42 @@ def bulk_matrix_geometric(
     Both paths return values in count space.  For sparse matrices only the
     stored values are transformed (log1p(0) = 0, so sparsity is preserved).
     """
-    if is_log1p:
-        log_mean = np.array(matrix.mean(axis=axis)).flatten()
-    elif isinstance(matrix, csr_matrix):
-        m = matrix.copy()
-        np.log1p(m.data, out=m.data)
-        log_mean = np.array(m.mean(axis=axis)).flatten()
-    else:
-        log_mean = _log1p_col_mean(np.asarray(matrix, dtype=np.float64))
-    return _expm1_vec(log_mean)
+    return _expm1_vec(_log1p_transformed_mean(matrix, is_log1p, axis=axis))
+
+
+def bulk_matrix_pre_transform_mean(
+    matrix: np.ndarray | csr_matrix, geometric_mean: bool, is_log1p: bool
+) -> np.ndarray:
+    """The linear (pre-back-transform) quantity :func:`pseudobulk` is built from.
+
+    Being a plain mean, it is safe to scale by row count and subtract across row
+    partitions (``global_sum - group_sum = rest_sum``), letting a "rest of the
+    dataset" pseudobulk be derived without ever materializing those rows.
+    Pair with :func:`pseudobulk_from_pre_mean` to recover the exact value
+    :func:`pseudobulk` would have returned.
+    """
+    if geometric_mean:
+        return _log1p_transformed_mean(matrix, is_log1p)
+    return bulk_matrix_arithmetic(matrix, is_log1p)
+
+
+def pseudobulk_from_pre_mean(pre_mean: np.ndarray, geometric_mean: bool) -> np.ndarray:
+    """Back-transform :func:`bulk_matrix_pre_transform_mean`'s output to match ``pseudobulk()``."""
+    if geometric_mean:
+        return _expm1_vec(pre_mean)
+    return pre_mean
+
+
+def cpm_from_gene_means(gene_means: np.ndarray) -> np.ndarray:
+    """Normalize per-gene pooled means to counts-per-million.
+
+    Split out of :func:`cpm_bulk` so callers that already have the pooled
+    arithmetic-mean sum (e.g. derived via a global-sum-minus-subset-sum trick)
+    can skip recomputing it. See :func:`cpm_bulk` for the full semantics.
+    """
+    total = float(gene_means.sum())
+    denom = total if total != 0.0 else 1.0
+    return gene_means / denom * 1e6
 
 
 def cpm_bulk(matrix: np.ndarray | csr_matrix, is_log1p: bool) -> np.ndarray:
@@ -123,10 +170,7 @@ def cpm_bulk(matrix: np.ndarray | csr_matrix, is_log1p: bool) -> np.ndarray:
     so every gene's CPM is ``0.0`` (and is dropped by any positive threshold) rather
     than ``inf``/``nan``. Returns a flat float64 array of length ``n_genes``.
     """
-    gene_means = bulk_matrix_arithmetic(matrix, is_log1p)
-    total = float(gene_means.sum())
-    denom = total if total != 0.0 else 1.0
-    return gene_means / denom * 1e6
+    return cpm_from_gene_means(bulk_matrix_arithmetic(matrix, is_log1p))
 
 
 @nb.njit(parallel=True)
@@ -180,3 +224,28 @@ def mwu(
         return mannwhitneyu_sparse(x, y)
     else:
         return mannwhitneyu_columns(x, y)
+
+
+def mwu_one_vs_rest(
+    matrix: np.ndarray | csr_matrix, codes: np.ndarray, n_groups: int
+) -> MannWhitneyUResult:
+    """One-shot 1-vs-rest Mann-Whitney U test: each gene is ranked once against the
+    full ``matrix``, and every group's statistic/p-value (vs. all other rows) is
+    derived from that single ranking rather than by re-ranking per group.
+
+    Thin wrapper over ``numba_mwu.mannwhitneyu_one_vs_rest``/``_sparse`` (the
+    one-vs-rest generalization of ``mwu()``'s pairwise kernels, upstreamed from
+    this module — see numba_mwu's CLAUDE.md for the algorithm).
+
+    ``matrix`` must contain only the rows to be compared (e.g. filtered/-1 codes
+    already excluded); ``codes[i]`` gives the group id of row ``i`` in
+    ``[0, n_groups)``. Returns a :class:`MannWhitneyUResult` whose ``statistic``
+    and ``pvalue`` are each ``(n_groups, n_genes)`` arrays — row ``g`` is group
+    ``g``'s test against every other row in ``matrix``.
+    """
+    codes = np.ascontiguousarray(codes, dtype=np.int64)
+    if isinstance(matrix, csr_matrix):
+        return mannwhitneyu_one_vs_rest_sparse(matrix, codes, n_groups=n_groups)
+    return mannwhitneyu_one_vs_rest(
+        np.asarray(matrix, dtype=np.float64), codes, n_groups=n_groups
+    )

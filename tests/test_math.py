@@ -1,13 +1,21 @@
 """Tests for pdex._math (log2_fold_change, percent_change, bulk_matrix_geometric)."""
 
 import numpy as np
+import pytest
+from scipy import stats
 from scipy.sparse import csr_matrix
 
 from pdex._math import (
+    bulk_matrix_arithmetic,
     bulk_matrix_geometric,
+    bulk_matrix_pre_transform_mean,
     cpm_bulk,
+    cpm_from_gene_means,
     log2_fold_change,
+    mwu_one_vs_rest,
     percent_change,
+    pseudobulk,
+    pseudobulk_from_pre_mean,
 )
 
 
@@ -233,3 +241,130 @@ class TestCpmBulk:
         """Uniformly rescaling counts does not change the CPM (ratio cancels)."""
         x = np.array([[1.0, 3.0, 7.0], [3.0, 5.0, 2.0], [5.0, 1.0, 4.0]])
         np.testing.assert_allclose(cpm_bulk(x, False), cpm_bulk(100.0 * x, False))
+
+
+class TestCpmFromGeneMeans:
+    """Tests for cpm_from_gene_means, the normalize-only half of cpm_bulk."""
+
+    def test_matches_cpm_bulk(self):
+        x = np.array([[1.0, 3.0], [3.0, 5.0], [5.0, 1.0]])
+        gene_means = bulk_matrix_arithmetic(x, is_log1p=False)
+        np.testing.assert_allclose(
+            cpm_from_gene_means(gene_means), cpm_bulk(x, is_log1p=False)
+        )
+
+
+class TestBulkMatrixPreTransformMean:
+    """Tests for bulk_matrix_pre_transform_mean / pseudobulk_from_pre_mean.
+
+    These power the "all" mode's global-sum-minus-group-sum optimization: the
+    round trip must exactly reproduce ``pseudobulk()``, and the linear quantity
+    must be safely additive across row partitions.
+    """
+
+    @pytest.mark.parametrize("geometric_mean", [True, False])
+    @pytest.mark.parametrize("is_log1p", [True, False])
+    def test_round_trip_matches_pseudobulk(self, geometric_mean, is_log1p):
+        rng = np.random.default_rng(0)
+        counts = rng.poisson(5, size=(6, 4)).astype(np.float64)
+        x = np.log1p(counts) if is_log1p else counts
+
+        pre_mean = bulk_matrix_pre_transform_mean(
+            x, geometric_mean=geometric_mean, is_log1p=is_log1p
+        )
+        result = pseudobulk_from_pre_mean(pre_mean, geometric_mean)
+        expected = pseudobulk(x, geometric_mean=geometric_mean, is_log1p=is_log1p)
+        np.testing.assert_allclose(result, expected)
+
+    def test_global_minus_group_equals_rest(self):
+        """global_sum - group_sum = rest_sum — the core "all" mode algebraic trick."""
+        rng = np.random.default_rng(1)
+        x = rng.poisson(5, size=(10, 3)).astype(np.float64)
+        group_mask = np.zeros(10, dtype=bool)
+        group_mask[:4] = True
+        n_total, n_group = x.shape[0], int(group_mask.sum())
+        n_rest = n_total - n_group
+
+        pre_mean_global = bulk_matrix_pre_transform_mean(
+            x, geometric_mean=True, is_log1p=False
+        )
+        pre_mean_group = bulk_matrix_pre_transform_mean(
+            x[group_mask], geometric_mean=True, is_log1p=False
+        )
+        rest_pre_mean = (pre_mean_global * n_total - pre_mean_group * n_group) / n_rest
+        expected = bulk_matrix_pre_transform_mean(
+            x[~group_mask], geometric_mean=True, is_log1p=False
+        )
+        np.testing.assert_allclose(rest_pre_mean, expected, rtol=1e-10)
+
+
+def _assert_mwu_one_vs_rest_matches_scipy(matrix, dense_reference, codes, n_groups):
+    result = mwu_one_vs_rest(matrix, codes, n_groups)
+    for g in range(n_groups):
+        group_mask = codes == g
+        for j in range(dense_reference.shape[1]):
+            col = dense_reference[:, j]
+            gv = col[group_mask]
+            rv = col[~group_mask]
+            scipy_result = stats.mannwhitneyu(
+                gv, rv, alternative="two-sided", method="asymptotic"
+            )
+            np.testing.assert_allclose(
+                result.statistic[g, j], scipy_result.statistic, rtol=1e-8, atol=1e-8
+            )
+            np.testing.assert_allclose(
+                result.pvalue[g, j], scipy_result.pvalue, rtol=1e-8, atol=1e-8
+            )
+    return result
+
+
+class TestMwuOneVsRest:
+    """Tests for the one-shot global-rank 1-vs-rest MWU kernel used by mode='all'."""
+
+    def test_dense_matches_scipy_multi_group(self):
+        rng = np.random.default_rng(2)
+        x = rng.poisson(5, size=(15, 3)).astype(np.float64)
+        x[:5] += 4
+        x[10:] = np.clip(x[10:] - 2, 0, None)
+        codes = np.array([0] * 5 + [1] * 5 + [2] * 5)
+        _assert_mwu_one_vs_rest_matches_scipy(x, x, codes, 3)
+
+    def test_dense_with_ties_matches_scipy(self):
+        """Ties spanning multiple groups: tie correction is shared across all groups."""
+        x = np.array([[1.0], [1.0], [2.0], [2.0], [3.0], [1.0]])
+        codes = np.array([0, 0, 1, 1, 2, 2])
+        _assert_mwu_one_vs_rest_matches_scipy(x, x, codes, 3)
+
+    def test_group_of_size_one_matches_scipy(self):
+        x = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        codes = np.array([0, 1, 1, 1, 1])
+        _assert_mwu_one_vs_rest_matches_scipy(x, x, codes, 2)
+
+    def test_all_zero_column_gives_pvalue_one(self):
+        """A fully-tied (all-zero) gene needs no special-case: s_sq == 0 -> p = 1.0."""
+        x = np.zeros((6, 1))
+        codes = np.array([0, 0, 1, 1, 2, 2])
+        result = mwu_one_vs_rest(x, codes, 3)
+        np.testing.assert_allclose(result.pvalue, 1.0)
+        assert np.isfinite(result.statistic).all()
+
+    def test_sparse_matches_dense(self):
+        rng = np.random.default_rng(3)
+        x = rng.poisson(2, size=(12, 4)).astype(np.float64)
+        x[x < 1.5] = 0.0
+        codes = np.array([0] * 4 + [1] * 3 + [2] * 5)
+        dense_result = mwu_one_vs_rest(x, codes, 3)
+        sparse_result = mwu_one_vs_rest(csr_matrix(x), codes, 3)
+        np.testing.assert_allclose(
+            dense_result.statistic, sparse_result.statistic, rtol=1e-8
+        )
+        np.testing.assert_allclose(
+            dense_result.pvalue, sparse_result.pvalue, rtol=1e-8, atol=1e-10
+        )
+
+    def test_sparse_matches_scipy(self):
+        rng = np.random.default_rng(4)
+        x = rng.poisson(2, size=(12, 3)).astype(np.float64)
+        x[x < 1.5] = 0.0
+        codes = np.array([0] * 4 + [1] * 3 + [2] * 5)
+        _assert_mwu_one_vs_rest_matches_scipy(csr_matrix(x), x, codes, 3)

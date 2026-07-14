@@ -2,6 +2,7 @@
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 import polars as pl
 import pytest
 from scipy import stats
@@ -16,7 +17,6 @@ EXPECTED_COLUMNS = {
     "ref_mean",
     "target_membership",
     "ref_membership",
-    "fold_change",
     "log2_fold_change",
     "percent_change",
     "p_value",
@@ -86,7 +86,7 @@ class TestPdexRefMode:
         for group_name in ["A", "B"]:
             group_rows = result.filter(pl.col("target") == group_name)
             # Mean fold change should be positive since we boosted these groups
-            mean_fc = group_rows["fold_change"].mean()
+            mean_fc = group_rows["log2_fold_change"].mean()
             assert mean_fc > 0, f"Expected positive fold change for group {group_name}"  # type: ignore
 
     def test_statistics_against_scipy(self, small_adata):
@@ -176,7 +176,7 @@ class TestPdexRefSparse:
 
         assert dense_result.shape == sparse_result.shape
 
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 dense_result[col].to_numpy(),
                 sparse_result[col].to_numpy(),
@@ -236,7 +236,7 @@ class TestPdexAllMode:
         """Group B was boosted the most, so its fold change vs rest should be positive."""
         result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         group_b_rows = result.filter(pl.col("target") == "B")
-        mean_fc = group_b_rows["fold_change"].mean()
+        mean_fc = group_b_rows["log2_fold_change"].mean()
         assert mean_fc > 0  # type: ignore
 
     def test_statistics_against_scipy(self, small_adata):
@@ -276,13 +276,161 @@ class TestPdexAllMode:
 
         assert dense_result.shape == sparse_result.shape
 
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 dense_result[col].to_numpy(),
                 sparse_result[col].to_numpy(),
                 rtol=1e-6,
                 err_msg=f"Mismatch in column {col}",
             )
+
+
+def _assert_all_mode_matches_scipy_per_group(result, adata_dense, skip_genes=()):
+    """Cross-checks every (group, gene) pair against an independently-computed
+    scipy.stats.mannwhitneyu — a stronger oracle than diffing against pdex's own
+    prior implementation, since it validates the multi-group rank-sum reduction
+    from first principles.
+
+    ``skip_genes`` excludes genes where pdex deliberately diverges from raw scipy:
+    a fully-tied column (all values equal) makes scipy's variance term 0/0 -> NaN,
+    while pdex (matching numba_mwu's convention) defines this degenerate case as
+    p=1.0 (see test_all_zero_gene_pvalue_is_one).
+    """
+    X_dense = np.asarray(adata_dense.X)
+    obs = adata_dense.obs
+    for group_name in obs["guide"].unique():
+        group_mask = (obs["guide"] == group_name).to_numpy()
+        rest_mask = ~group_mask
+        group_rows = result.filter(pl.col("target") == group_name)
+        for gene_idx, gene in enumerate(adata_dense.var_names):
+            if gene in skip_genes:
+                continue
+            gv = X_dense[group_mask, gene_idx]
+            rv = X_dense[rest_mask, gene_idx]
+            scipy_result = stats.mannwhitneyu(
+                gv, rv, alternative="two-sided", method="asymptotic"
+            )
+            row = group_rows.filter(pl.col("feature") == gene)
+            np.testing.assert_allclose(
+                row["statistic"][0], scipy_result.statistic, rtol=1e-6, atol=1e-8
+            )
+            np.testing.assert_allclose(
+                row["p_value"][0], scipy_result.pvalue, rtol=1e-6, atol=1e-8
+            )
+
+
+class TestPdexAllModeMultiGroup:
+    """Stress tests for the 1-vs-rest global-rank optimization across many groups,
+    uneven group sizes (including size 1), ties, and an all-zero gene."""
+
+    def test_matches_scipy_per_group_dense(self, multi_group_adata):
+        result = pdex(multi_group_adata, groupby="guide", mode="all", is_log1p=False)
+        _assert_all_mode_matches_scipy_per_group(
+            result, multi_group_adata, skip_genes={"gene_7"}
+        )
+
+    def test_matches_scipy_per_group_sparse(
+        self, multi_group_adata, multi_group_adata_sparse
+    ):
+        result = pdex(
+            multi_group_adata_sparse, groupby="guide", mode="all", is_log1p=False
+        )
+        _assert_all_mode_matches_scipy_per_group(
+            result, multi_group_adata, skip_genes={"gene_7"}
+        )
+
+    def test_sparse_dense_agreement(self, multi_group_adata, multi_group_adata_sparse):
+        dense_result = pdex(
+            multi_group_adata, groupby="guide", mode="all", is_log1p=False
+        ).sort(["target", "feature"])
+        sparse_result = pdex(
+            multi_group_adata_sparse, groupby="guide", mode="all", is_log1p=False
+        ).sort(["target", "feature"])
+
+        for col in [
+            "p_value",
+            "statistic",
+            "log2_fold_change",
+            "percent_change",
+            "target_mean",
+            "ref_mean",
+        ]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                atol=1e-8,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+    def test_all_zero_gene_pvalue_is_one(self, multi_group_adata):
+        """gene_7 is zero everywhere: the degenerate s_sq <= 0 case needs no
+        special-casing but must still yield p=1.0 and a finite statistic."""
+        result = pdex(multi_group_adata, groupby="guide", mode="all", is_log1p=False)
+        zero_gene_rows = result.filter(pl.col("feature") == "gene_7")
+        assert (zero_gene_rows["p_value"] == 1.0).all()
+        assert np.isfinite(zero_gene_rows["statistic"].to_numpy()).all()
+
+    def test_membership_counts(self, multi_group_adata):
+        result = pdex(multi_group_adata, groupby="guide", mode="all", is_log1p=False)
+        n_total = multi_group_adata.n_obs
+        for group_name in multi_group_adata.obs["guide"].unique():
+            expected_group = (multi_group_adata.obs["guide"] == group_name).sum()
+            expected_rest = n_total - expected_group
+            group_rows = result.filter(pl.col("target") == group_name)
+            assert group_rows["target_membership"].unique().to_list() == [
+                expected_group
+            ]
+            assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
+
+    def test_filtered_group_excluded_from_both_sides(self, rng):
+        """Cells with a NaN/empty groupby value are excluded from every group and
+        from 'rest', for every comparison (no test previously exercised this at
+        the pdex() level for mode='all')."""
+        n_per = 5
+        n_genes = 3
+        groups = np.array(["A"] * n_per + ["B"] * n_per + [""] * n_per)
+        X = rng.poisson(lam=5, size=(len(groups), n_genes)).astype(np.float64)
+        obs = pd.DataFrame(
+            {"guide": groups}, index=[f"cell_{i}" for i in range(len(groups))]
+        )
+        var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+        adata = ad.AnnData(X=X, obs=obs, var=var)
+
+        result = pdex(adata, groupby="guide", mode="all", is_log1p=False)
+        assert set(result["target"].unique().to_list()) == {"A", "B"}
+        # rest for "A" is only "B" (n_per cells), not "B" + filtered cells
+        a_rows = result.filter(pl.col("target") == "A")
+        assert a_rows["target_membership"].unique().to_list() == [n_per]
+        assert a_rows["ref_membership"].unique().to_list() == [n_per]
+
+    def test_single_group_raises(self, rng):
+        n_genes = 3
+        X = rng.poisson(lam=5, size=(6, n_genes)).astype(np.float64)
+        obs = pd.DataFrame(
+            {"guide": ["only"] * 6}, index=[f"cell_{i}" for i in range(6)]
+        )
+        var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+        adata = ad.AnnData(X=X, obs=obs, var=var)
+
+        with pytest.raises(ValueError, match="at least 2 groups"):
+            pdex(adata, groupby="guide", mode="all", is_log1p=False)
+
+    def test_cpm_filter_drops_floor_across_many_groups(self, multi_group_adata):
+        """Extends TestCpmFilter::test_all_mode_drops_floor to 6 uneven groups:
+        the all-zero gene_7 is dropped for every group under the new rest_cpm
+        (global-sum-minus-group-sum) derivation."""
+        result = pdex(
+            multi_group_adata,
+            groupby="guide",
+            mode="all",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+        assert "gene_7" not in result["feature"].to_list()
+        assert set(result["target"].to_list()) == set(
+            multi_group_adata.obs["guide"].unique()
+        )
 
 
 class TestPdexOnTargetMode:
@@ -423,7 +571,7 @@ class TestPdexOnTargetMode:
         )
 
         assert dense_result.shape == sparse_result.shape
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 dense_result[col].to_numpy(),
                 sparse_result[col].to_numpy(),
@@ -595,7 +743,7 @@ class TestPdexGeometricMean:
         """pdex on raw counts with is_log1p=False and on log1p counts with is_log1p=True
         should yield identical results across all output columns.
 
-        Pseudobulk means back-transform to the same count space, so fold_change and
+        Pseudobulk means back-transform to the same count space, so log2_fold_change and
         percent_change must match. The MWU statistic and p_value operate on the raw
         cell-level values (which differ between the two inputs), so they are NOT
         expected to match — only the pseudobulk-derived columns are tested here.
@@ -614,7 +762,7 @@ class TestPdexGeometricMean:
             is_log1p=True,
             geometric_mean=True,
         )
-        for col in ["target_mean", "ref_mean", "fold_change", "percent_change"]:
+        for col in ["target_mean", "ref_mean", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 raw_result[col].to_numpy(),
                 log_result[col].to_numpy(),
@@ -648,7 +796,7 @@ class TestPdexBacked:
         inmem = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         backed = pdex(small_adata_backed, groupby="guide", mode="ref", is_log1p=False)
         assert inmem.shape == backed.shape
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 inmem[col].to_numpy(),
                 backed[col].to_numpy(),
@@ -660,7 +808,7 @@ class TestPdexBacked:
         inmem = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         backed = pdex(small_adata_backed, groupby="guide", mode="all", is_log1p=False)
         assert inmem.shape == backed.shape
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 inmem[col].to_numpy(),
                 backed[col].to_numpy(),
@@ -700,7 +848,7 @@ class TestUnexpressedInBothGroups:
 
         assert (gene0["target_mean"].to_numpy() == 0).all()
         assert (gene0["ref_mean"].to_numpy() == 0).all()
-        for col in ["log2_fold_change", "fold_change", "percent_change"]:
+        for col in ["log2_fold_change", "percent_change"]:
             values = gene0[col].to_numpy()
             assert not np.isnan(values).any(), f"{col} contains NaN"
             np.testing.assert_array_equal(values, 0.0)
@@ -721,7 +869,7 @@ class TestUnexpressedInBothGroups:
         row = result.filter(pl.col("target") == "A")
         assert row["target_mean"].to_numpy()[0] == 0
         assert row["ref_mean"].to_numpy()[0] == 0
-        for col in ["log2_fold_change", "fold_change", "percent_change"]:
+        for col in ["log2_fold_change", "percent_change"]:
             value = row[col].to_numpy()[0]
             assert not np.isnan(value), f"{col} is NaN"
             assert value == 0.0
@@ -738,6 +886,61 @@ class TestUnexpressedInBothGroups:
         # log2(0 / ref) -> -inf; percent_change (0 - ref) / ref -> -1.0
         assert np.isneginf(gene0["log2_fold_change"].to_numpy()).all()
         np.testing.assert_allclose(gene0["percent_change"].to_numpy(), -1.0)
+
+
+class TestAllModeRestMeanFloatingPointCancellation:
+    """Regression test for `_pdex_all`'s "rest = global - group" derivation.
+
+    ``rest_pre_mean``/``rest_arith_mean`` are each computed as the difference
+    of two independently-rounded means (see __init__.py::_pdex_all). For a
+    gene expressed only in the target group (exactly zero in "rest"), this
+    difference is mathematically exactly zero but can land a hair below zero
+    in floating point (e.g. -3e-15) — impossible for a mean of non-negative
+    data, but enough to corrupt log2_fold_change (silently masked to 0.0, as
+    if "unexpressed in both groups") and percent_change (a large *negative*
+    finite value) when epsilon=0.0. `_pdex_all` clips both to ``[0, None]``.
+    """
+
+    def test_one_sided_zero_via_subtraction_is_not_masked(self):
+        n_group, n_rest = 3857, 555
+        rng = np.random.default_rng(1)
+        group_vals = np.log1p(rng.poisson(10, size=n_group).astype(np.float64) + 1)
+
+        X = np.zeros((n_group + n_rest, 1))
+        X[:n_group, 0] = group_vals
+        obs = pd.DataFrame(
+            {"guide": ["A"] * n_group + ["B"] * n_rest},
+            index=[f"c{i}" for i in range(n_group + n_rest)],
+        )
+        var = pd.DataFrame(index=["gene_0"])
+        adata = ad.AnnData(X=X, obs=obs, var=var)
+
+        result = pdex(
+            adata,
+            groupby="guide",
+            mode="all",
+            is_log1p=True,
+            epsilon=0.0,
+            geometric_mean=True,
+        )
+        row = result.filter(pl.col("target") == "A")
+
+        ref_mean = row["ref_mean"][0]
+        lfc = row["log2_fold_change"][0]
+        pc = row["percent_change"][0]
+
+        # The clip's direct invariant: a mean of non-negative data can never
+        # be negative, regardless of which way the floating-point noise breaks.
+        assert ref_mean >= 0.0
+
+        # gene_0 is expressed in the target and unexpressed in rest, so this
+        # must read as a large *positive* change -- never NaN, and never
+        # masked to 0.0 (the distinct "unexpressed in both groups" case,
+        # which does not apply here since target_mean > 0).
+        assert not np.isnan(lfc)
+        assert np.isposinf(lfc) or lfc > 10
+        assert not np.isnan(pc)
+        assert pc > 0
 
 
 def _pairs(df) -> set:
@@ -925,7 +1128,7 @@ class TestCpmFilter:
         for col in [
             "target_mean",
             "ref_mean",
-            "fold_change",
+            "log2_fold_change",
             "percent_change",
             "p_value",
             "statistic",

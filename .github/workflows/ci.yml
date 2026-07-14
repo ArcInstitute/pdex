@@ -1,6 +1,9 @@
 name: "CI"
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   all_jobs:
@@ -18,7 +21,7 @@ jobs:
 
   semver-check:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
 
     steps:
       - uses: actions/checkout@v4

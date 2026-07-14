@@ -1,6 +1,6 @@
 [project]
 name = "pdex"
-version = "0.2.5"
+version = "0.3.0"
 description = "Parallel differential expression for single-cell perturbation sequencing"
 readme = "README.md"
 authors = [{ name = "noam teyssier", email = "noam.teyssier@arcinstitute.org" }]
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anndata>=0.12.10",
     "numba>=0.64.0",
-    "numba-mwu>=0.1.1",
+    "numba-mwu>=0.2.0",
     "numpy>=2.4.2",
     "pandas>=2.3.3",
     "polars>=1.38.1",
