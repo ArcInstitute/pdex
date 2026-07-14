@@ -17,7 +17,6 @@ EXPECTED_COLUMNS = {
     "ref_mean",
     "target_membership",
     "ref_membership",
-    "fold_change",
     "log2_fold_change",
     "percent_change",
     "p_value",
@@ -87,7 +86,7 @@ class TestPdexRefMode:
         for group_name in ["A", "B"]:
             group_rows = result.filter(pl.col("target") == group_name)
             # Mean fold change should be positive since we boosted these groups
-            mean_fc = group_rows["fold_change"].mean()
+            mean_fc = group_rows["log2_fold_change"].mean()
             assert mean_fc > 0, f"Expected positive fold change for group {group_name}"  # type: ignore
 
     def test_statistics_against_scipy(self, small_adata):
@@ -177,7 +176,7 @@ class TestPdexRefSparse:
 
         assert dense_result.shape == sparse_result.shape
 
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 dense_result[col].to_numpy(),
                 sparse_result[col].to_numpy(),
@@ -237,7 +236,7 @@ class TestPdexAllMode:
         """Group B was boosted the most, so its fold change vs rest should be positive."""
         result = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         group_b_rows = result.filter(pl.col("target") == "B")
-        mean_fc = group_b_rows["fold_change"].mean()
+        mean_fc = group_b_rows["log2_fold_change"].mean()
         assert mean_fc > 0  # type: ignore
 
     def test_statistics_against_scipy(self, small_adata):
@@ -277,7 +276,7 @@ class TestPdexAllMode:
 
         assert dense_result.shape == sparse_result.shape
 
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 dense_result[col].to_numpy(),
                 sparse_result[col].to_numpy(),
@@ -351,7 +350,7 @@ class TestPdexAllModeMultiGroup:
         for col in [
             "p_value",
             "statistic",
-            "fold_change",
+            "log2_fold_change",
             "percent_change",
             "target_mean",
             "ref_mean",
@@ -572,7 +571,7 @@ class TestPdexOnTargetMode:
         )
 
         assert dense_result.shape == sparse_result.shape
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 dense_result[col].to_numpy(),
                 sparse_result[col].to_numpy(),
@@ -744,7 +743,7 @@ class TestPdexGeometricMean:
         """pdex on raw counts with is_log1p=False and on log1p counts with is_log1p=True
         should yield identical results across all output columns.
 
-        Pseudobulk means back-transform to the same count space, so fold_change and
+        Pseudobulk means back-transform to the same count space, so log2_fold_change and
         percent_change must match. The MWU statistic and p_value operate on the raw
         cell-level values (which differ between the two inputs), so they are NOT
         expected to match — only the pseudobulk-derived columns are tested here.
@@ -763,7 +762,7 @@ class TestPdexGeometricMean:
             is_log1p=True,
             geometric_mean=True,
         )
-        for col in ["target_mean", "ref_mean", "fold_change", "percent_change"]:
+        for col in ["target_mean", "ref_mean", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 raw_result[col].to_numpy(),
                 log_result[col].to_numpy(),
@@ -797,7 +796,7 @@ class TestPdexBacked:
         inmem = pdex(small_adata, groupby="guide", mode="ref", is_log1p=False)
         backed = pdex(small_adata_backed, groupby="guide", mode="ref", is_log1p=False)
         assert inmem.shape == backed.shape
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 inmem[col].to_numpy(),
                 backed[col].to_numpy(),
@@ -809,7 +808,7 @@ class TestPdexBacked:
         inmem = pdex(small_adata, groupby="guide", mode="all", is_log1p=False)
         backed = pdex(small_adata_backed, groupby="guide", mode="all", is_log1p=False)
         assert inmem.shape == backed.shape
-        for col in ["p_value", "statistic", "fold_change", "percent_change"]:
+        for col in ["p_value", "statistic", "log2_fold_change", "percent_change"]:
             np.testing.assert_allclose(
                 inmem[col].to_numpy(),
                 backed[col].to_numpy(),
@@ -849,7 +848,7 @@ class TestUnexpressedInBothGroups:
 
         assert (gene0["target_mean"].to_numpy() == 0).all()
         assert (gene0["ref_mean"].to_numpy() == 0).all()
-        for col in ["log2_fold_change", "fold_change", "percent_change"]:
+        for col in ["log2_fold_change", "percent_change"]:
             values = gene0[col].to_numpy()
             assert not np.isnan(values).any(), f"{col} contains NaN"
             np.testing.assert_array_equal(values, 0.0)
@@ -870,7 +869,7 @@ class TestUnexpressedInBothGroups:
         row = result.filter(pl.col("target") == "A")
         assert row["target_mean"].to_numpy()[0] == 0
         assert row["ref_mean"].to_numpy()[0] == 0
-        for col in ["log2_fold_change", "fold_change", "percent_change"]:
+        for col in ["log2_fold_change", "percent_change"]:
             value = row[col].to_numpy()[0]
             assert not np.isnan(value), f"{col} is NaN"
             assert value == 0.0
@@ -1129,7 +1128,7 @@ class TestCpmFilter:
         for col in [
             "target_mean",
             "ref_mean",
-            "fold_change",
+            "log2_fold_change",
             "percent_change",
             "p_value",
             "statistic",
