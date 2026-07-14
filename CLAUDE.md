@@ -73,12 +73,12 @@ checked empirically (inspect the per-gene CPM distribution).
 | File                   | Role                                                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------------------------------- |
 | `src/pdex/__init__.py` | `pdex()` entry point and full pipeline logic                                                            |
-| `src/pdex/_math.py`    | Numba JIT-compiled `fold_change()`, `percent_change()`, and `mwu()`/`mwu_one_vs_rest()` wrappers over `numba-mwu`; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter; the `bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()` trio powering `"all"` mode's global-sum optimization |
+| `src/pdex/_math.py`    | Numba JIT-compiled `log2_fold_change()`, `percent_change()`, and `mwu()`/`mwu_one_vs_rest()` wrappers over `numba-mwu`; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter; the `bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()` trio powering `"all"` mode's global-sum optimization |
 | `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_available_cpus()` — affinity-aware CPU count (respects cgroup/SLURM limits); `_detect_is_log1p()` heuristic |
 
 ### Performance Design
 
-- Numba JIT compilation accelerates per-cell/per-gene math (`fold_change`, `percent_change`, `_log1p_col_mean`, `_expm1_vec`)
+- Numba JIT compilation accelerates per-cell/per-gene math (`log2_fold_change`, `percent_change`, `_log1p_col_mean`, `_expm1_vec`)
 - `numba-mwu` (external dep, `>=0.2.0`) provides Numba-accelerated Mann-Whitney U kernels for **both** the pairwise case (`mannwhitneyu_columns`/`mannwhitneyu_sparse`, used by `"ref"` and `"on_target"` modes) and the one-vs-rest case (`mannwhitneyu_one_vs_rest`/`_sparse`, used by `"all"` mode) — the one-vs-rest kernels originated in pdex and were upstreamed into `numba-mwu` since the optimization is domain-agnostic (see that package's CLAUDE.md for the algorithm).
 - Sparse CSR matrices are handled by reusing pre-computed non-targeting column indices to avoid redundant dense conversion
 - Parallelism is controlled via `threads` passed to `set_numba_threadpool()`
@@ -99,7 +99,6 @@ The returned Polars DataFrame (or pandas DataFrame when `as_pandas=True`) has co
 | `ref_mean`          | float | Pseudobulk mean for the reference, always in natural (count) space    |
 | `target_membership` | int   | Number of cells in the target group                                   |
 | `ref_membership`    | int   | Number of cells in the reference                                      |
-| `fold_change`       | float | **Deprecated** alias for `log2_fold_change` (identical values). Retained for one release; emits a `FutureWarning` on every `pdex(...)` call and will be removed in pdex 0.3.0. |
 | `log2_fold_change`  | float | log2((target_mean + epsilon) / (ref_mean + epsilon)) — computed from pseudobulk means. `epsilon` defaults to `1e-9` (finite-guard), so by default there are no `±inf`/`NaN`: one-sided zeros become large-but-finite and `0/0` is `0.0`. With `epsilon == 0`, `0/0` is still defined as `0.0` (not `NaN`) but one-sided zeros yield `±inf`. |
 | `percent_change`    | float | (target_mean - ref_mean) / (ref_mean + epsilon) — computed from pseudobulk means. With the default `epsilon=1e-9` there are no non-finite values; with `epsilon == 0`, `0/0` is `0.0` (not `NaN`) and a zero reference with nonzero target yields `+inf`. |
 | `p_value`           | float | Mann-Whitney U p-value (per-cell vectors)                             |

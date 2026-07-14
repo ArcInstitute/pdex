@@ -256,7 +256,7 @@ def pdex(
     epsilon:
         Pseudocount added to the **native (count-space) means** — the denominator
         (and, for ``log2_fold_change``, the numerator) — before computing
-        ``fold_change`` and ``percent_change``. It is never applied to the CPM view
+        ``log2_fold_change`` and ``percent_change``. It is never applied to the CPM view
         used by ``cpm_filter``. When ``epsilon > 0``, extreme values from near-zero
         reference means (scRNA-seq sparsity artifact) are dampened toward zero, and
         one-sided zeros become large-but-finite instead of ``±inf``. Has no effect on
@@ -307,7 +307,7 @@ def pdex(
     pl.DataFrame | pd.DataFrame
         One row per (group, feature) pair with columns: ``target``, ``feature``,
         ``target_mean``, ``ref_mean``, ``target_membership``, ``ref_membership``,
-        ``fold_change``, ``log2_fold_change``, ``percent_change``, ``p_value``,
+        ``log2_fold_change``, ``percent_change``, ``p_value``,
         ``statistic``, ``fdr``.
 
         ``target_mean`` and ``ref_mean`` are always in **natural (count) space**.
@@ -322,12 +322,8 @@ def pdex(
         and ``percent_change`` define this as ``0.0`` (no change) rather than
         ``NaN``. One-sided zeros still produce ``±inf``.
 
-        ``fold_change`` is a **deprecated** alias for ``log2_fold_change``
-        (identical values). It is retained for one release to ease migration
-        and will be removed in pdex 0.3.0. New code should read
-        ``log2_fold_change`` directly. A :class:`FutureWarning` is emitted
-        on every ``pdex(...)`` call.  The MWU ``p_value`` and
-        ``statistic`` are computed directly on the per-cell expression vectors.
+        The MWU ``p_value`` and ``statistic`` are computed directly on the
+        per-cell expression vectors.
 
         For ``mode="ref"``, the reference group itself is excluded from the output.
 
@@ -344,14 +340,6 @@ def pdex(
 
     if epsilon < 0:
         raise ValueError(f"epsilon must be non-negative, got {epsilon}")
-
-    warnings.warn(
-        "The `fold_change` column in pdex output is deprecated and will be "
-        "removed in pdex 0.3.0. Use `log2_fold_change` instead — it contains "
-        "the same values (`log2(target_mean / ref_mean)`).",
-        FutureWarning,
-        stacklevel=2,
-    )
 
     # Set the global threadpool for numba
     set_numba_threadpool(threads)
@@ -502,7 +490,6 @@ def _assemble_group_frame(
             "ref_mean": ref_mean,
             "target_membership": np.full(feature.shape[0], target_membership),
             "ref_membership": np.full(feature.shape[0], ref_membership),
-            "fold_change": lfc,
             "log2_fold_change": lfc,
             "percent_change": pc,
             "p_value": pvalue,
@@ -790,7 +777,6 @@ def _pdex_on_target(
                 "ref_mean": ref_mean,
                 "target_membership": group_mask.size,
                 "ref_membership": ref_membership,
-                "fold_change": lfc,
                 "log2_fold_change": lfc,
                 "percent_change": pc,
                 "p_value": p_value,
@@ -809,7 +795,6 @@ def _pdex_on_target(
                 "ref_mean": pl.Float64,
                 "target_membership": pl.Int64,
                 "ref_membership": pl.Int64,
-                "fold_change": pl.Float64,
                 "log2_fold_change": pl.Float64,
                 "percent_change": pl.Float64,
                 "p_value": pl.Float64,
