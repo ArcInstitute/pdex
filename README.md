@@ -103,7 +103,6 @@ Returns a Polars DataFrame (or pandas if `as_pandas=True`) with one row per (gro
 | `ref_mean`          | Pseudobulk mean for the reference (count space)    |
 | `target_membership` | Number of cells in the target group                |
 | `ref_membership`    | Number of cells in the reference                   |
-| `fold_change`       | **Deprecated alias** for `log2_fold_change` (identical values). Will be removed in pdex 0.3.0. |
 | `log2_fold_change`  | log2((target_mean + epsilon) / (ref_mean + epsilon)). With default `epsilon=1e-9`, one-sided zeros are large finite values; with `epsilon=0.0`, one-sided zeros yield `±inf`. Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
 | `percent_change`    | (target_mean - ref_mean) / (ref_mean + epsilon). With default `epsilon=1e-9`, zero-reference cases are finite; with `epsilon=0.0`, a zero reference with nonzero target yields `+inf`. Genes unexpressed in both groups (0/0) report `0.0`, not `NaN`. |
 | `p_value`           | Mann-Whitney U p-value                             |
