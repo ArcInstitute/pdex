@@ -889,6 +889,61 @@ class TestUnexpressedInBothGroups:
         np.testing.assert_allclose(gene0["percent_change"].to_numpy(), -1.0)
 
 
+class TestAllModeRestMeanFloatingPointCancellation:
+    """Regression test for `_pdex_all`'s "rest = global - group" derivation.
+
+    ``rest_pre_mean``/``rest_arith_mean`` are each computed as the difference
+    of two independently-rounded means (see __init__.py::_pdex_all). For a
+    gene expressed only in the target group (exactly zero in "rest"), this
+    difference is mathematically exactly zero but can land a hair below zero
+    in floating point (e.g. -3e-15) — impossible for a mean of non-negative
+    data, but enough to corrupt log2_fold_change (silently masked to 0.0, as
+    if "unexpressed in both groups") and percent_change (a large *negative*
+    finite value) when epsilon=0.0. `_pdex_all` clips both to ``[0, None]``.
+    """
+
+    def test_one_sided_zero_via_subtraction_is_not_masked(self):
+        n_group, n_rest = 3857, 555
+        rng = np.random.default_rng(1)
+        group_vals = np.log1p(rng.poisson(10, size=n_group).astype(np.float64) + 1)
+
+        X = np.zeros((n_group + n_rest, 1))
+        X[:n_group, 0] = group_vals
+        obs = pd.DataFrame(
+            {"guide": ["A"] * n_group + ["B"] * n_rest},
+            index=[f"c{i}" for i in range(n_group + n_rest)],
+        )
+        var = pd.DataFrame(index=["gene_0"])
+        adata = ad.AnnData(X=X, obs=obs, var=var)
+
+        result = pdex(
+            adata,
+            groupby="guide",
+            mode="all",
+            is_log1p=True,
+            epsilon=0.0,
+            geometric_mean=True,
+        )
+        row = result.filter(pl.col("target") == "A")
+
+        ref_mean = row["ref_mean"][0]
+        lfc = row["log2_fold_change"][0]
+        pc = row["percent_change"][0]
+
+        # The clip's direct invariant: a mean of non-negative data can never
+        # be negative, regardless of which way the floating-point noise breaks.
+        assert ref_mean >= 0.0
+
+        # gene_0 is expressed in the target and unexpressed in rest, so this
+        # must read as a large *positive* change -- never NaN, and never
+        # masked to 0.0 (the distinct "unexpressed in both groups" case,
+        # which does not apply here since target_mean > 0).
+        assert not np.isnan(lfc)
+        assert np.isposinf(lfc) or lfc > 10
+        assert not np.isnan(pc)
+        assert pc > 0
+
+
 def _pairs(df) -> set:
     """Set of (target, feature) tuples in a result frame."""
     return set(zip(df["target"].to_list(), df["feature"].to_list()))

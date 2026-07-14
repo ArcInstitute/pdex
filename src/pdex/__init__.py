@@ -646,7 +646,12 @@ def _pdex_all(
         group_pre_mean = bulk_matrix_pre_transform_mean(
             group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
-        rest_pre_mean = (global_pre_sum - group_pre_mean * n_group) / n_rest
+        # Clip: rest_pre_mean is a mean of non-negative data, so it can never be
+        # legitimately negative. This guards against floating-point noise which can
+        # otherwise corrupt log2_fold_change/percent_change.
+        rest_pre_mean = np.clip(
+            (global_pre_sum - group_pre_mean * n_group) / n_rest, 0, None
+        )
 
         group_bulk = pseudobulk_from_pre_mean(group_pre_mean, geometric_mean)
         rest_bulk = pseudobulk_from_pre_mean(rest_pre_mean, geometric_mean)
@@ -661,7 +666,10 @@ def _pdex_all(
             keep = None
         else:
             group_arith_mean = bulk_matrix_arithmetic(group_matrix, is_log1p)
-            rest_arith_mean = (global_arith_sum - group_arith_mean * n_group) / n_rest
+            # Same floating-point-cancellation guard as rest_pre_mean above.
+            rest_arith_mean = np.clip(
+                (global_arith_sum - group_arith_mean * n_group) / n_rest, 0, None
+            )
             rest_cpm = cpm_from_gene_means(rest_arith_mean)
             keep = _cpm_keep_mask(group_matrix, rest_cpm, is_log1p, cpm_filter)
 
