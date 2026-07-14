@@ -2,6 +2,7 @@
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 import polars as pl
 import pytest
 from scipy import stats
@@ -283,6 +284,154 @@ class TestPdexAllMode:
                 rtol=1e-6,
                 err_msg=f"Mismatch in column {col}",
             )
+
+
+def _assert_all_mode_matches_scipy_per_group(result, adata_dense, skip_genes=()):
+    """Cross-checks every (group, gene) pair against an independently-computed
+    scipy.stats.mannwhitneyu — a stronger oracle than diffing against pdex's own
+    prior implementation, since it validates the multi-group rank-sum reduction
+    from first principles.
+
+    ``skip_genes`` excludes genes where pdex deliberately diverges from raw scipy:
+    a fully-tied column (all values equal) makes scipy's variance term 0/0 -> NaN,
+    while pdex (matching numba_mwu's convention) defines this degenerate case as
+    p=1.0 (see test_all_zero_gene_pvalue_is_one).
+    """
+    X_dense = np.asarray(adata_dense.X)
+    obs = adata_dense.obs
+    for group_name in obs["guide"].unique():
+        group_mask = (obs["guide"] == group_name).to_numpy()
+        rest_mask = ~group_mask
+        group_rows = result.filter(pl.col("target") == group_name)
+        for gene_idx, gene in enumerate(adata_dense.var_names):
+            if gene in skip_genes:
+                continue
+            gv = X_dense[group_mask, gene_idx]
+            rv = X_dense[rest_mask, gene_idx]
+            scipy_result = stats.mannwhitneyu(
+                gv, rv, alternative="two-sided", method="asymptotic"
+            )
+            row = group_rows.filter(pl.col("feature") == gene)
+            np.testing.assert_allclose(
+                row["statistic"][0], scipy_result.statistic, rtol=1e-6, atol=1e-8
+            )
+            np.testing.assert_allclose(
+                row["p_value"][0], scipy_result.pvalue, rtol=1e-6, atol=1e-8
+            )
+
+
+class TestPdexAllModeMultiGroup:
+    """Stress tests for the 1-vs-rest global-rank optimization across many groups,
+    uneven group sizes (including size 1), ties, and an all-zero gene."""
+
+    def test_matches_scipy_per_group_dense(self, multi_group_adata):
+        result = pdex(multi_group_adata, groupby="guide", mode="all", is_log1p=False)
+        _assert_all_mode_matches_scipy_per_group(
+            result, multi_group_adata, skip_genes={"gene_7"}
+        )
+
+    def test_matches_scipy_per_group_sparse(
+        self, multi_group_adata, multi_group_adata_sparse
+    ):
+        result = pdex(
+            multi_group_adata_sparse, groupby="guide", mode="all", is_log1p=False
+        )
+        _assert_all_mode_matches_scipy_per_group(
+            result, multi_group_adata, skip_genes={"gene_7"}
+        )
+
+    def test_sparse_dense_agreement(self, multi_group_adata, multi_group_adata_sparse):
+        dense_result = pdex(
+            multi_group_adata, groupby="guide", mode="all", is_log1p=False
+        ).sort(["target", "feature"])
+        sparse_result = pdex(
+            multi_group_adata_sparse, groupby="guide", mode="all", is_log1p=False
+        ).sort(["target", "feature"])
+
+        for col in [
+            "p_value",
+            "statistic",
+            "fold_change",
+            "percent_change",
+            "target_mean",
+            "ref_mean",
+        ]:
+            np.testing.assert_allclose(
+                dense_result[col].to_numpy(),
+                sparse_result[col].to_numpy(),
+                rtol=1e-6,
+                atol=1e-8,
+                err_msg=f"Mismatch in column {col}",
+            )
+
+    def test_all_zero_gene_pvalue_is_one(self, multi_group_adata):
+        """gene_7 is zero everywhere: the degenerate s_sq <= 0 case needs no
+        special-casing but must still yield p=1.0 and a finite statistic."""
+        result = pdex(multi_group_adata, groupby="guide", mode="all", is_log1p=False)
+        zero_gene_rows = result.filter(pl.col("feature") == "gene_7")
+        assert (zero_gene_rows["p_value"] == 1.0).all()
+        assert np.isfinite(zero_gene_rows["statistic"].to_numpy()).all()
+
+    def test_membership_counts(self, multi_group_adata):
+        result = pdex(multi_group_adata, groupby="guide", mode="all", is_log1p=False)
+        n_total = multi_group_adata.n_obs
+        for group_name in multi_group_adata.obs["guide"].unique():
+            expected_group = (multi_group_adata.obs["guide"] == group_name).sum()
+            expected_rest = n_total - expected_group
+            group_rows = result.filter(pl.col("target") == group_name)
+            assert group_rows["target_membership"].unique().to_list() == [
+                expected_group
+            ]
+            assert group_rows["ref_membership"].unique().to_list() == [expected_rest]
+
+    def test_filtered_group_excluded_from_both_sides(self, rng):
+        """Cells with a NaN/empty groupby value are excluded from every group and
+        from 'rest', for every comparison (no test previously exercised this at
+        the pdex() level for mode='all')."""
+        n_per = 5
+        n_genes = 3
+        groups = np.array(["A"] * n_per + ["B"] * n_per + [""] * n_per)
+        X = rng.poisson(lam=5, size=(len(groups), n_genes)).astype(np.float64)
+        obs = pd.DataFrame(
+            {"guide": groups}, index=[f"cell_{i}" for i in range(len(groups))]
+        )
+        var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+        adata = ad.AnnData(X=X, obs=obs, var=var)
+
+        result = pdex(adata, groupby="guide", mode="all", is_log1p=False)
+        assert set(result["target"].unique().to_list()) == {"A", "B"}
+        # rest for "A" is only "B" (n_per cells), not "B" + filtered cells
+        a_rows = result.filter(pl.col("target") == "A")
+        assert a_rows["target_membership"].unique().to_list() == [n_per]
+        assert a_rows["ref_membership"].unique().to_list() == [n_per]
+
+    def test_single_group_raises(self, rng):
+        n_genes = 3
+        X = rng.poisson(lam=5, size=(6, n_genes)).astype(np.float64)
+        obs = pd.DataFrame(
+            {"guide": ["only"] * 6}, index=[f"cell_{i}" for i in range(6)]
+        )
+        var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+        adata = ad.AnnData(X=X, obs=obs, var=var)
+
+        with pytest.raises(ValueError, match="at least 2 groups"):
+            pdex(adata, groupby="guide", mode="all", is_log1p=False)
+
+    def test_cpm_filter_drops_floor_across_many_groups(self, multi_group_adata):
+        """Extends TestCpmFilter::test_all_mode_drops_floor to 6 uneven groups:
+        the all-zero gene_7 is dropped for every group under the new rest_cpm
+        (global-sum-minus-group-sum) derivation."""
+        result = pdex(
+            multi_group_adata,
+            groupby="guide",
+            mode="all",
+            is_log1p=False,
+            cpm_filter=5,
+        )
+        assert "gene_7" not in result["feature"].to_list()
+        assert set(result["target"].to_list()) == set(
+            multi_group_adata.obs["guide"].unique()
+        )
 
 
 class TestPdexOnTargetMode:
