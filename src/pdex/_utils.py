@@ -20,10 +20,12 @@ def _available_cpus() -> int:
     CPU even when affinity or a cgroup restricts the process to far fewer, causing
     ``numba.set_num_threads`` to raise.
     """
-    try:
-        return len(os.sched_getaffinity(0))
-    except AttributeError:
-        return mp.cpu_count()
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return len(os.sched_getaffinity(0))
+        except AttributeError:
+            pass
+    return mp.cpu_count()
 
 
 def set_numba_threadpool(threads: int = 0):
