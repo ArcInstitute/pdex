@@ -27,7 +27,7 @@ from pdex._math import (
     pseudobulk_from_pre_mean,
 )
 
-from ._utils import _detect_is_log1p, set_numba_threadpool
+from ._utils import _available_memory_bytes, _detect_is_log1p, set_numba_threadpool
 
 log = logging.getLogger(__name__)
 
@@ -42,11 +42,22 @@ log.setLevel(logging.WARNING)
 PDEX_MODES = Literal["ref", "all", "on_target"]
 DEFAULT_REFERENCE = "non-targeting"
 
-# Peak bytes of buffered group matrices per streaming round over a lazy X
-# (see _stream_row_groups). Groups are batched into rounds under this budget,
-# so total storage passes ~= total_group_bytes / budget instead of one
-# (amplified) pass per group.
+# Fallback peak bytes of buffered group matrices per streaming round over a
+# lazy X (see _stream_row_groups) when available memory cannot be determined.
+# Groups are batched into rounds under the budget, so total storage passes
+# ~= total_group_bytes / budget instead of one (amplified) pass per group —
+# a bigger budget means fewer full passes over the store.
 _STREAM_BUDGET_BYTES = 4 * 1024**3
+
+
+def _stream_budget_bytes() -> int:
+    """Round budget for lazy-X streaming: 25% of available memory when known
+    (clamped to [512 MiB, 64 GiB]), else the 4 GiB fallback."""
+    avail = _available_memory_bytes()
+    if avail is None:
+        return _STREAM_BUDGET_BYTES
+    return int(min(max(avail // 4, 512 * 1024**2), 64 * 1024**3))
+
 
 __all__ = ["DEFAULT_REFERENCE", "PDEX_MODES", "pdex"]
 
@@ -638,6 +649,11 @@ def _pdex_ref(
     target_indices = [g for g in range(len(unique_groups)) if g != ref_index]
     group_masks = {g: np.flatnonzero(unique_group_indices == g) for g in target_indices}
 
+    progress = tqdm(
+        total=len(target_indices),
+        desc="Running parallel differential expression (against reference)",
+    )
+
     def _iter_group_matrices():
         if not is_lazy(adata.X):
             for g in target_indices:
@@ -646,30 +662,34 @@ def _pdex_ref(
         # Lazy X: batch groups into memory-budgeted rounds — each round is one
         # streaming pass over obs blocks instead of one amplified read per group.
         # Group bytes are estimated from the realized reference matrix.
+        budget = _stream_budget_bytes()
         bytes_per_row = _matrix_nbytes(ref_matrix) / max(1, ref_membership)
         rounds: list[list[int]] = [[]]
         acc = 0.0
         for g in target_indices:
             est = group_masks[g].size * bytes_per_row
-            if rounds[-1] and acc + est > _STREAM_BUDGET_BYTES:
+            if rounds[-1] and acc + est > budget:
                 rounds.append([])
                 acc = 0.0
             rounds[-1].append(g)
             acc += est
-        for round_groups in rounds:
+        log.info(
+            "ref mode: %d streaming round(s) over lazy X (budget %.1f GiB)",
+            len(rounds),
+            budget / 1024**3,
+        )
+        for i, round_groups in enumerate(rounds, 1):
             if not round_groups:
                 continue
+            if len(rounds) > 1:
+                progress.set_postfix_str(f"streaming round {i}/{len(rounds)}")
             mats = _stream_row_groups(
                 adata.X, adata.n_obs, [group_masks[g] for g in round_groups]
             )
             yield from zip(round_groups, mats)
 
     results = []
-    for group_idx, group_matrix in tqdm(
-        _iter_group_matrices(),
-        total=len(target_indices),
-        desc="Running parallel differential expression (against reference)",
-    ):
+    for group_idx, group_matrix in _iter_group_matrices():
         group_name = unique_groups[group_idx]
         group_mask = group_masks[group_idx]
         group_bulk = pseudobulk(
@@ -704,6 +724,8 @@ def _pdex_ref(
                 keep=keep,
             )
         )
+        progress.update(1)
+    progress.close()
     return pl.concat(results)
 
 

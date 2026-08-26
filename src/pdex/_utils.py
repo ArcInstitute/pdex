@@ -42,6 +42,14 @@ def set_numba_threadpool(threads: int = 0):
     numba.set_num_threads(threads)
 
 
+def _available_memory_bytes() -> int | None:
+    """Best-effort available physical memory (Linux sysconf); None when unknown."""
+    try:
+        return os.sysconf("SC_AV_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
 def _detect_is_log1p(X) -> bool:
     """Heuristic: log1p-transformed data has a max value below ~20 (log1p(5e8) ≈ 20)."""
     chunk = realize(X[:500] if X.shape[0] > 500 else X)

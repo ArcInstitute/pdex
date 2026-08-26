@@ -81,9 +81,11 @@ block realized exactly once, rows scattered to the requesting groups (blocks no 
 needs are never computed). Per-mode strategy on lazy X:
 
 - `"ref"` — reference realized via one streaming pass; target groups batched into
-  memory-budgeted **rounds** (`_STREAM_BUDGET_BYTES`, 4 GiB of buffered group matrices,
-  estimated from the realized reference's bytes/row), one streaming pass per round. Total
-  passes ≈ `total_group_bytes / budget` instead of one per group; peak memory ≈ budget.
+  memory-budgeted **rounds** (`_stream_budget_bytes()`: 25% of available RAM clamped to
+  [512 MiB, 64 GiB], falling back to `_STREAM_BUDGET_BYTES` = 4 GiB when unknown; group
+  bytes estimated from the realized reference's bytes/row), one streaming pass per round.
+  Total passes ≈ `total_group_bytes / budget` instead of one per group; peak memory ≈
+  budget. The tqdm bar shows `streaming round i/n` while multi-round.
 - `"all"` — single-block: one `_stream_row_groups` pass; var-blocked: `realize(X[:, j0:j1])`
   per block (cheap on var-chunked stores) with the valid-row filter applied in memory.
 - `"on_target"` — one streaming pass over `X[:, needed_genes]` collects every group's
