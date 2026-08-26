@@ -17,12 +17,23 @@ dependencies = [
     "tqdm>=4.67.3",
 ]
 
+[project.optional-dependencies]
+# Lazy/backed IO: read_lazy (dask X, xarray obs/var) over local or remote
+# zarr/h5ad stores. Core pdex never imports these at module scope.
+lazy = [
+    "dask>=2024.8.0",
+    "xarray>=2024.6.0",
+    "zarr>=3.0.0",
+    "fsspec>=2024.6.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pdex[lazy]",
     "pytest>=8.3.5",
     "ruff>=0.15.2",
     "ty>=0.0.18",

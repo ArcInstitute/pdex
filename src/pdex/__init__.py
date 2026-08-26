@@ -12,6 +12,12 @@ from scipy.sparse import csr_matrix, issparse
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
+from pdex._backend import (
+    default_obs_block_size,
+    default_var_block_size,
+    is_lazy,
+    realize,
+)
 from pdex._math import (
     bulk_matrix_arithmetic,
     bulk_matrix_pre_transform_mean,
@@ -40,7 +46,7 @@ log.setLevel(logging.WARNING)
 PDEX_MODES = Literal["ref", "all", "on_target"]
 DEFAULT_REFERENCE = "non-targeting"
 
-__all__ = ["pdex", "DEFAULT_REFERENCE", "PDEX_MODES"]
+__all__ = ["DEFAULT_REFERENCE", "PDEX_MODES", "pdex"]
 
 
 def _validate_groupby(obs: pd.DataFrame | Dataset2D, groupby: str):
@@ -49,6 +55,19 @@ def _validate_groupby(obs: pd.DataFrame | Dataset2D, groupby: str):
         raise ValueError(
             f"Missing column: {groupby}. Available: {', '.join(obs.columns)}"
         )
+
+
+def _obs_series(obs: pd.DataFrame | Dataset2D, col: str) -> pd.Series:
+    """Column as a pandas Series regardless of obs container.
+
+    Lazy AnnData (``read_lazy``) exposes obs as an xarray-backed ``Dataset2D``
+    whose columns are ``DataArray``s; those need materializing before pandas
+    operations. Plain DataFrame columns pass through untouched.
+    """
+    values = obs[col]
+    if isinstance(values, pd.Series):
+        return values
+    return pd.Series(np.asarray(values))
 
 
 def _identify_reference_index(unique_groups: np.ndarray, reference: str) -> int:
@@ -84,7 +103,13 @@ def _build_group_gene_map(
         )
 
     # Unique (group, gene) pairs, dropping NaN gene entries
-    mapping = pd.DataFrame(obs[[groupby, gene_col]]).drop_duplicates().dropna()
+    if isinstance(obs, pd.DataFrame):
+        mapping = pd.DataFrame(obs[[groupby, gene_col]])
+    else:
+        mapping = pd.DataFrame(
+            {groupby: _obs_series(obs, groupby), gene_col: _obs_series(obs, gene_col)}
+        )
+    mapping = mapping.drop_duplicates().dropna()
 
     # Check for non-control groups mapped to more than one gene, then drop control
     mapping = mapping[mapping[groupby] != control]
@@ -122,7 +147,7 @@ def _unique_groups(
     """Returns the unique groups in the observation data.
 
     Removes NaN and empty strings."""
-    labels = pd.Categorical(obs[groupby])
+    labels = pd.Categorical(_obs_series(obs, groupby))
     labels = labels.remove_categories(
         [c for c in labels.categories if c == "" or pd.isna(c)]
     )
@@ -141,17 +166,22 @@ def _isolate_matrix(
         raise ValueError("AnnData object does not have a matrix.")
     if mask_y is None:
         result = adata.X[mask_x]  # ty: ignore[not-subscriptable]
+    elif is_lazy(adata.X):
+        # Dask disallows mixing fancy row indices with a scalar column index,
+        # and dropping a dimension breaks its sparse-chunked arrays — index in
+        # two steps and keep the column axis.
+        cols = (
+            slice(mask_y, mask_y + 1)
+            if isinstance(mask_y, (int, np.integer))
+            else mask_y
+        )
+        result = adata.X[mask_x][:, cols]  # ty: ignore[not-subscriptable, invalid-argument-type]
     else:
         result = adata.X[mask_x, mask_y]  # ty: ignore[not-subscriptable]
 
-    # Fast path: already in-memory
-    if isinstance(result, (np.ndarray, csr_matrix)):
-        return result
-    # Backed sparse -> csr_matrix
-    if issparse(result):
-        return csr_matrix(result)
-    # Backed dense (h5py.Dataset slice, dask, etc.) -> ndarray
-    return np.asarray(result)
+    # Normalize any backend (in-memory, h5py/zarr, backed sparse, dask) to
+    # ndarray or csr_matrix.
+    return realize(result)
 
 
 def _x_has_negative(x: np.ndarray | csr_matrix | None) -> bool:
@@ -166,7 +196,7 @@ def _x_has_negative(x: np.ndarray | csr_matrix | None) -> bool:
     sample = x
     if not isinstance(sample, (np.ndarray, csr_matrix)):
         sample_obj = cast(Any, sample)
-        sample = sample_obj[: min(1000, sample_obj.shape[0])]
+        sample = realize(sample_obj[: min(1000, sample_obj.shape[0])])
     if issparse(sample):
         sample = csr_matrix(sample)
         return bool(sample.data.size and (sample.data < 0).any())
@@ -178,19 +208,30 @@ def _per_cell_library_sizes(adata: ad.AnnData, is_log1p: bool) -> np.ndarray:
     """Per-cell total expression over all genes, in natural (count) space.
 
     Needed by ``on_target`` mode's CPM filter: the single-gene slices don't carry
-    the library size, so it is precomputed once over the full matrix (``expm1`` is
-    applied first when ``is_log1p``). Returns a 1-D float64 array of length n_obs.
+    the library size, so it is precomputed over the full matrix (``expm1`` is
+    applied first when ``is_log1p``). Backed/lazy matrices are streamed in
+    contiguous row blocks so the full matrix is never resident; in-memory inputs
+    are processed in one shot. Returns a 1-D float64 array of length n_obs.
     """
-    x = _isolate_matrix(adata, np.arange(adata.n_obs))
-    if is_log1p:
+    if adata.X is None:
+        raise ValueError("AnnData object does not have a matrix.")
+    n_obs = adata.n_obs
+    step = default_obs_block_size(adata.X, adata.n_vars) or n_obs
+    out = np.empty(n_obs, dtype=np.float64)
+    for i0 in range(0, n_obs, step):
+        i1 = min(i0 + step, n_obs)
+        x = realize(adata.X[i0:i1])  # ty: ignore[not-subscriptable]
+        if is_log1p:
+            if isinstance(x, csr_matrix):
+                x = x.copy()
+                np.expm1(x.data, out=x.data)
+            else:
+                x = np.expm1(np.asarray(x, dtype=np.float64))
         if isinstance(x, csr_matrix):
-            x = x.copy()
-            np.expm1(x.data, out=x.data)
+            out[i0:i1] = np.asarray(x.sum(axis=1)).ravel()
         else:
-            x = np.expm1(np.asarray(x, dtype=np.float64))
-    if isinstance(x, csr_matrix):
-        return np.asarray(x.sum(axis=1)).ravel().astype(np.float64)
-    return np.asarray(x, dtype=np.float64).sum(axis=1)
+            out[i0:i1] = np.asarray(x, dtype=np.float64).sum(axis=1)
+    return out
 
 
 def pdex(
@@ -203,6 +244,7 @@ def pdex(
     as_pandas: bool = False,
     epsilon: float = 1e-9,
     cpm_filter: float | None = None,
+    block_size: int | None = None,
     **kwargs,
 ) -> pl.DataFrame | pd.DataFrame:
     """Run parallel differential expression analysis on single-cell data.
@@ -292,6 +334,16 @@ def pdex(
         dataset-dependent (it tracks the separation between the noise floor and
         genuinely expressed genes); inspect the per-gene CPM distribution of your
         data and tune ``T`` empirically rather than relying on a fixed default.
+    block_size:
+        Number of genes per block for ``mode="all"``'s gene-block streaming.
+        ``None`` (default) resolves automatically: in-memory inputs run as a
+        single block (identical to previous behaviour); lazy inputs (from
+        :func:`anndata.experimental.read_lazy`) pick a chunk-aligned width
+        targeting ~256 MB dense-equivalent per block, so the full matrix is
+        never materialized at once. Results are identical regardless of
+        ``block_size`` — every per-gene statistic is column-independent and CPM
+        normalization happens after all blocks are reduced. Ignored by
+        ``"ref"``/``"on_target"`` modes, which stream per group instead.
     **kwargs:
         Mode-specific keyword arguments:
 
@@ -397,6 +449,7 @@ def pdex(
             is_log1p=is_log1p,
             epsilon=epsilon,
             cpm_filter=cpm_filter,
+            block_size=block_size,
         )
     elif mode == "on_target":
         gene_col = kwargs.pop("gene_col", None)
@@ -583,6 +636,7 @@ def _pdex_all(
     is_log1p: bool = False,
     epsilon: float = 0.0,
     cpm_filter: float | None = None,
+    block_size: int | None = None,
 ) -> pl.DataFrame:
     unique_groups, unique_group_indices = _unique_groups(adata.obs, groupby)
     n_groups = len(unique_groups)
@@ -592,86 +646,145 @@ def _pdex_all(
         raise ValueError(f"mode='all' requires at least 2 groups, found {n_groups}")
 
     feature_names = adata.var_names
+    n_vars = adata.n_vars
 
-    # group ∪ rest is always the full (non-filtered) dataset in "all" mode, so the
-    # matrix is materialized once here rather than once per group (see CLAUDE.md).
     valid_mask = np.flatnonzero(unique_group_indices >= 0)
     codes_valid = unique_group_indices[valid_mask]
     n_valid = valid_mask.size
 
-    global_matrix = _isolate_matrix(adata, valid_mask)
+    # group ∪ rest is always the full (non-filtered) dataset in "all" mode, so each
+    # value is read exactly once (see CLAUDE.md). The read happens in var (gene)
+    # blocks: every statistic here — pseudobulk pre-mean, arithmetic mean, one-shot
+    # 1-vs-rest MWU ranking — is column-independent, so per-block results concatenate
+    # to bit-identical full-matrix results. In-memory inputs default to a single
+    # block (previous behaviour); lazy inputs stream chunk-aligned blocks so the
+    # full matrix is never resident at once.
+    if block_size is None:
+        block_size = default_var_block_size(adata.X, n_valid)
+    if block_size is None or block_size >= n_vars:
+        blocks = [(0, n_vars)]
+    else:
+        blocks = [
+            (j0, min(j0 + block_size, n_vars)) for j0 in range(0, n_vars, block_size)
+        ]
+    single_block = len(blocks) == 1
+    log.info("mode='all': %d var block(s) (block_size=%s)", len(blocks), block_size)
 
-    # One-shot 1-vs-rest MWU: each gene is ranked once, not once per group.
-    mwu_result = mwu_one_vs_rest(global_matrix, codes_valid, n_groups)
-    all_statistic = mwu_result.statistic
-    all_pvalue = np.asarray(mwu_result.pvalue).clip(0, 1)
+    if is_lazy(adata.X):
+        # Keep the row selection in the dask graph so only (n_valid, block)
+        # is ever materialized.
+        source = adata.X[valid_mask]  # ty: ignore[not-subscriptable]
+    else:
+        source = _isolate_matrix(adata, valid_mask)
 
-    # Pseudobulk pre-transform mean, computed once; "rest" is derived per group via
-    # (global_sum - group_sum) / n_rest rather than pseudobulk() on a fresh rest slice.
-    global_pre_mean = bulk_matrix_pre_transform_mean(
-        global_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
-    )
-    global_pre_sum = global_pre_mean * n_valid
+    local_group_masks = [np.flatnonzero(codes_valid == g) for g in range(n_groups)]
+    group_sizes = np.array([m.size for m in local_group_masks])
 
-    if cpm_filter is not None:
-        global_arith_mean = bulk_matrix_arithmetic(global_matrix, is_log1p)
-        global_arith_sum = global_arith_mean * n_valid
+    # Per-block accumulators; concatenated along the gene axis after the loop.
+    stat_parts: list[np.ndarray] = []
+    pval_parts: list[np.ndarray] = []
+    group_pre_parts: list[np.ndarray] = []
+    rest_pre_parts: list[np.ndarray] = []
+    group_arith_parts: list[np.ndarray] = []
+    rest_arith_parts: list[np.ndarray] = []
 
-    results = []
-    for group_idx in tqdm(
-        range(n_groups),
+    for j0, j1 in tqdm(
+        blocks,
         desc="Running parallel differential expression (1 vs Rest)",
     ):
-        group_name = unique_groups[group_idx]
+        block = (
+            realize(source) if single_block else realize(source[:, j0:j1])  # ty: ignore[not-subscriptable, invalid-argument-type]
+        )
+        n_block = j1 - j0
 
-        local_group_mask = np.flatnonzero(codes_valid == group_idx)
-        n_group = local_group_mask.size
+        # One-shot 1-vs-rest MWU: each gene is ranked once, not once per group.
+        mwu_result = mwu_one_vs_rest(block, codes_valid, n_groups)
+        stat_parts.append(np.asarray(mwu_result.statistic))
+        pval_parts.append(np.asarray(mwu_result.pvalue).clip(0, 1))
+
+        # Pseudobulk pre-transform mean over all valid cells; "rest" is derived per
+        # group via (global_sum - group_sum) / n_rest rather than pseudobulk() on a
+        # fresh rest slice.
+        block_pre_sum = (
+            bulk_matrix_pre_transform_mean(
+                block, geometric_mean=geometric_mean, is_log1p=is_log1p
+            )
+            * n_valid
+        )
+        if cpm_filter is not None:
+            block_arith_sum = bulk_matrix_arithmetic(block, is_log1p) * n_valid
+
+        group_pre = np.empty((n_groups, n_block))
+        rest_pre = np.empty((n_groups, n_block))
+        group_arith = np.empty((n_groups, n_block)) if cpm_filter is not None else None
+        rest_arith = np.empty((n_groups, n_block)) if cpm_filter is not None else None
+
+        for g in range(n_groups):
+            group_matrix = block[local_group_masks[g]]
+            n_group = group_sizes[g]
+            n_rest = n_valid - n_group
+
+            group_pre[g] = bulk_matrix_pre_transform_mean(
+                group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
+            )
+            # Clip: rest means are means of non-negative data, so they can never be
+            # legitimately negative. This guards against floating-point noise which
+            # can otherwise corrupt log2_fold_change/percent_change.
+            rest_pre[g] = np.clip(
+                (block_pre_sum - group_pre[g] * n_group) / n_rest, 0, None
+            )
+            if group_arith is not None and rest_arith is not None:
+                group_arith[g] = bulk_matrix_arithmetic(group_matrix, is_log1p)
+                rest_arith[g] = np.clip(
+                    (block_arith_sum - group_arith[g] * n_group) / n_rest, 0, None
+                )
+
+        group_pre_parts.append(group_pre)
+        rest_pre_parts.append(rest_pre)
+        if group_arith is not None and rest_arith is not None:
+            group_arith_parts.append(group_arith)
+            rest_arith_parts.append(rest_arith)
+
+    all_statistic = np.hstack(stat_parts)
+    all_pvalue = np.hstack(pval_parts)
+    all_group_pre = np.hstack(group_pre_parts)
+    all_rest_pre = np.hstack(rest_pre_parts)
+    if cpm_filter is not None:
+        all_group_arith = np.hstack(group_arith_parts)
+        all_rest_arith = np.hstack(rest_arith_parts)
+
+    results = []
+    for group_idx in range(n_groups):
+        n_group = group_sizes[group_idx]
         n_rest = n_valid - n_group
 
-        group_matrix = global_matrix[local_group_mask]
-
-        group_pre_mean = bulk_matrix_pre_transform_mean(
-            group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
-        )
-        # Clip: rest_pre_mean is a mean of non-negative data, so it can never be
-        # legitimately negative. This guards against floating-point noise which can
-        # otherwise corrupt log2_fold_change/percent_change.
-        rest_pre_mean = np.clip(
-            (global_pre_sum - group_pre_mean * n_group) / n_rest, 0, None
-        )
-
-        group_bulk = pseudobulk_from_pre_mean(group_pre_mean, geometric_mean)
-        rest_bulk = pseudobulk_from_pre_mean(rest_pre_mean, geometric_mean)
+        group_bulk = pseudobulk_from_pre_mean(all_group_pre[group_idx], geometric_mean)
+        rest_bulk = pseudobulk_from_pre_mean(all_rest_pre[group_idx], geometric_mean)
 
         lfc = log2_fold_change(group_bulk, rest_bulk, epsilon)
         pc = percent_change(group_bulk, rest_bulk, epsilon)
 
-        mwu_statistic = all_statistic[group_idx]
-        mwu_pvalue = all_pvalue[group_idx]
-
         if cpm_filter is None:
             keep = None
         else:
-            group_arith_mean = bulk_matrix_arithmetic(group_matrix, is_log1p)
-            # Same floating-point-cancellation guard as rest_pre_mean above.
-            rest_arith_mean = np.clip(
-                (global_arith_sum - group_arith_mean * n_group) / n_rest, 0, None
-            )
-            rest_cpm = cpm_from_gene_means(rest_arith_mean)
-            keep = _cpm_keep_mask(group_matrix, rest_cpm, is_log1p, cpm_filter)
+            # CPM normalizes across ALL genes, so it can only be computed after
+            # every block's arithmetic means have been reduced — never per block.
+            target_cpm = cpm_from_gene_means(all_group_arith[group_idx])
+            rest_cpm = cpm_from_gene_means(all_rest_arith[group_idx])
+            keep = (target_cpm > cpm_filter) | (rest_cpm > cpm_filter)
 
         results.append(
             _assemble_group_frame(
-                target=group_name,
+                target=unique_groups[group_idx],
                 feature_names=feature_names,
                 target_bulk=group_bulk,
                 ref_bulk=rest_bulk,
-                target_membership=n_group,
-                ref_membership=n_rest,
+                target_membership=int(n_group),
+                ref_membership=int(n_rest),
                 lfc=lfc,
                 pc=pc,
-                pvalue=mwu_pvalue,
-                statistic=mwu_statistic,
+                pvalue=all_pvalue[group_idx],
+                statistic=all_statistic[group_idx],
                 keep=keep,
             )
         )

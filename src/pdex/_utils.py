@@ -6,6 +6,8 @@ import numba
 import numpy as np
 from scipy.sparse import issparse
 
+from pdex._backend import realize
+
 log = logging.getLogger(__name__)
 
 
@@ -42,7 +44,7 @@ def set_numba_threadpool(threads: int = 0):
 
 def _detect_is_log1p(X) -> bool:
     """Heuristic: log1p-transformed data has a max value below ~20 (log1p(5e8) ≈ 20)."""
-    chunk = X[:500] if X.shape[0] > 500 else X
+    chunk = realize(X[:500] if X.shape[0] > 500 else X)
     if issparse(chunk):
         sample = chunk.data  # only stored (non-zero) values
     else:

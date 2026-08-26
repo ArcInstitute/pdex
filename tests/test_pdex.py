@@ -1212,6 +1212,8 @@ class TestCpmFilter:
         adata.write_h5ad(path)
         backed = ad.read_h5ad(path, backed="r")
 
-        with pytest.warns(UserWarning, match="negative values"):
-            with pytest.raises(ValueError, match="Sparse MWU requires non-negative"):
-                pdex(backed, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5)
+        with (
+            pytest.warns(UserWarning, match="negative values"),
+            pytest.raises(ValueError, match="Sparse MWU requires non-negative"),
+        ):
+            pdex(backed, groupby="guide", mode="ref", is_log1p=False, cpm_filter=5)

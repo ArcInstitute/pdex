@@ -36,7 +36,7 @@ uv run ty check
 
 ### Core Pipeline (`src/pdex/__init__.py`)
 
-The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, epsilon, cpm_filter, **kwargs)`, which:
+The main entry point is `pdex(adata, groupby, mode, threads, is_log1p, geometric_mean, as_pandas, epsilon, cpm_filter, block_size, **kwargs)`, which:
 
 1. Validates the `groupby` column in `adata.obs`
 2. Extracts unique groups (filters NaN and empty strings)
@@ -51,6 +51,35 @@ Three modes:
 - `"on_target"`: each non-reference group vs the reference, but only at the single gene targeted by that group (requires `gene_col=` kwarg)
 
 Unexpected `**kwargs` for any mode trigger a `UserWarning`.
+
+### Lazy / backed AnnData support
+
+`pdex()` accepts three AnnData flavors transparently, with identical results:
+
+- **in-memory** — ndarray or CSR sparse `X`
+- **backed h5ad** — `ad.read_h5ad(path, backed="r")` (h5py `Dataset` / anndata `_CSRDataset`)
+- **lazy** — `anndata.experimental.read_lazy(path_or_store)` over **h5ad or zarr, local or
+  remote** (fsspec URLs like `s3://…` — the store genericity lives in anndata/zarr/fsspec,
+  not in pdex). Lazy `X` is a dask array (dense or scipy-sparse chunks); obs/var are
+  xarray-backed `Dataset2D`.
+
+All `X` access funnels through `src/pdex/_backend.py`:
+
+- `realize(x)` — materializes any backend slice to `ndarray`/`csr_matrix` (dask
+  `.compute()`, sparse → CSR, h5py/zarr → `np.asarray`). Duck-typed; dask is never
+  imported (lazy IO deps are the optional `pdex[lazy]` extra: dask, xarray, zarr, fsspec).
+- `is_lazy(x)` — dask detection. Dask disallows mixed fancy-row + scalar-column indexing,
+  so `_isolate_matrix` indexes lazy `X` in two steps and keeps the column axis 2-D.
+- `default_var_block_size` / `default_obs_block_size` — chunk-aligned block widths
+  targeting ~256 MB dense-equivalent per block; both return `None` for in-memory `X`.
+
+Access-pattern strategy per mode: `"ref"`/`"on_target"` stream **per group** via row
+slicing (peak memory = largest group; near-optimal for row-major storage). `"all"` streams
+in **var (gene) blocks** (see Performance Design). `_per_cell_library_sizes` (on_target +
+cpm_filter) streams contiguous **row blocks**. obs columns from `Dataset2D` are normalized
+via `_obs_series()` before pandas ops. `_detect_is_log1p` and `_x_has_negative` realize
+their bounded samples. Tests: `tests/test_lazy.py` asserts lazy/backed == in-memory across
+all modes, block-size invariance, and an fsspec `memory://` store (same code path as s3).
 
 ### CPM floor filter (`cpm_filter`)
 
@@ -75,6 +104,7 @@ checked empirically (inspect the per-gene CPM distribution).
 | `src/pdex/__init__.py` | `pdex()` entry point and full pipeline logic                                                            |
 | `src/pdex/_math.py`    | Numba JIT-compiled `log2_fold_change()`, `percent_change()`, and `mwu()`/`mwu_one_vs_rest()` wrappers over `numba-mwu`; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter; the `bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()` trio powering `"all"` mode's global-sum optimization |
 | `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_available_cpus()` — affinity-aware CPU count (respects cgroup/SLURM limits); `_detect_is_log1p()` heuristic |
+| `src/pdex/_backend.py` | Storage-backend normalization: `realize()` (any slice → ndarray/csr), `is_lazy()` (dask detection), `default_var_block_size()`/`default_obs_block_size()` (chunk-aligned streaming block widths) |
 
 ### Performance Design
 
@@ -82,10 +112,11 @@ checked empirically (inspect the per-gene CPM distribution).
 - `numba-mwu` (external dep, `>=0.2.0`) provides Numba-accelerated Mann-Whitney U kernels for **both** the pairwise case (`mannwhitneyu_columns`/`mannwhitneyu_sparse`, used by `"ref"` and `"on_target"` modes) and the one-vs-rest case (`mannwhitneyu_one_vs_rest`/`_sparse`, used by `"all"` mode) — the one-vs-rest kernels originated in pdex and were upstreamed into `numba-mwu` since the optimization is domain-agnostic (see that package's CLAUDE.md for the algorithm).
 - Sparse CSR matrices are handled by reusing pre-computed non-targeting column indices to avoid redundant dense conversion
 - Parallelism is controlled via `threads` passed to `set_numba_threadpool()`
-- **`"all"` mode (1-vs-rest) is a one-shot computation, not a per-group loop over `numba-mwu`.** Because `group ∪ rest` is always the full (non-filtered) dataset regardless of which group is being tested, `_pdex_all` materializes the expression matrix exactly once (instead of once per group) and:
+- **`"all"` mode (1-vs-rest) is a one-shot computation, not a per-group loop over `numba-mwu`.** Because `group ∪ rest` is always the full (non-filtered) dataset regardless of which group is being tested, `_pdex_all` reads each value exactly once (instead of once per group) and:
   - Ranks each gene once across all cells via `mwu_one_vs_rest()` (`_math.py`, a thin wrapper over `numba_mwu.mannwhitneyu_one_vs_rest`/`_sparse`) and reduces to every group's rank-sum in the same pass, rather than re-ranking group+rest from scratch per group.
   - Derives each group's "rest" pseudobulk and CPM algebraically as `(global_sum - group_sum) / n_rest` (`bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()`) instead of recomputing over a freshly sliced "rest" matrix.
   - This turns `_pdex_all` from `O(n_groups × n_obs)` matrix I/O and ranking into ~`O(n_obs)` total, which matters most for screens with many groups (e.g. guides) and/or large cell counts.
+  - The read happens in **var (gene) blocks** (`block_size` param): every statistic (pre-transform mean, arithmetic mean, one-vs-rest ranking) is column-independent, so per-block results concatenate to bit-identical full-matrix results. `block_size=None` (default) resolves to a single block for in-memory `X` (previous behaviour) and chunk-aligned ~256 MB blocks for lazy `X`, so the full matrix is never resident. **Trap:** CPM normalizes across all genes — it is computed only after all blocks' arithmetic means are reduced, never per block.
 
 ### Output Schema
 
@@ -118,4 +149,4 @@ from pdex import pdex, DEFAULT_REFERENCE
 
 ## Dependencies
 
-Managed with `uv`. Build backend: `hatchling`. Key packages: `anndata`, `numba`, `numba-mwu`, `polars`, `pyarrow`, `scipy`, `tqdm`. Dev tools: `pytest`, `ruff`, `ty`.
+Managed with `uv`. Build backend: `hatchling`. Key packages: `anndata`, `numba`, `numba-mwu`, `polars`, `pyarrow`, `scipy`, `tqdm`. Optional extra `pdex[lazy]` (lazy/remote IO, never imported at module scope): `dask`, `xarray`, `zarr`, `fsspec`. Dev tools: `pytest`, `ruff`, `ty` (dev group includes `pdex[lazy]` so the lazy tests run).
