@@ -9,6 +9,7 @@ import polars as pl
 from anndata.experimental.backed import Dataset2D
 from numba_mwu import sparse_column_index
 from scipy.sparse import csr_matrix, issparse
+from scipy.sparse import vstack as sparse_vstack
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
@@ -40,6 +41,12 @@ log.setLevel(logging.WARNING)
 
 PDEX_MODES = Literal["ref", "all", "on_target"]
 DEFAULT_REFERENCE = "non-targeting"
+
+# Peak bytes of buffered group matrices per streaming round over a lazy X
+# (see _stream_row_groups). Groups are batched into rounds under this budget,
+# so total storage passes ~= total_group_bytes / budget instead of one
+# (amplified) pass per group.
+_STREAM_BUDGET_BYTES = 4 * 1024**3
 
 __all__ = ["DEFAULT_REFERENCE", "PDEX_MODES", "pdex"]
 
@@ -173,6 +180,55 @@ def _isolate_matrix(
     # Normalize any backend (in-memory, h5py/zarr, backed sparse, dask) to
     # ndarray or csr_matrix.
     return realize(result)
+
+
+def _matrix_nbytes(m: np.ndarray | csr_matrix) -> int:
+    """In-memory footprint of a realized matrix."""
+    if isinstance(m, csr_matrix):
+        return m.data.nbytes + m.indices.nbytes + m.indptr.nbytes
+    return m.nbytes
+
+
+def _vstack_parts(parts: list, x) -> np.ndarray | csr_matrix:
+    """Stack realized row pieces; an empty list realizes a 0-row slice of ``x``
+    so the result still carries the right type and width."""
+    if not parts:
+        return realize(x[0:0])
+    if len(parts) == 1:
+        return parts[0]
+    if isinstance(parts[0], csr_matrix):
+        return sparse_vstack(parts, format="csr")
+    return np.vstack(parts)
+
+
+def _stream_row_groups(
+    x, n_obs: int, row_groups: list[np.ndarray]
+) -> list[np.ndarray | csr_matrix]:
+    """Realize ``x[rows]`` for several sorted row sets in ONE pass over
+    chunk-aligned obs blocks.
+
+    This replaces per-group fancy indexing on a lazy (dask) ``x``: dask reads
+    every storage chunk touched by a group once *per group*, and scattered
+    groups touch nearly all chunks, amplifying IO by ~n_groups x. Here each
+    block is realized exactly once and its rows are scattered to the requesting
+    groups; blocks no group needs are skipped (their dask slice is never
+    computed). Row order within each group is ascending, matching ``x[rows]``.
+    """
+    step = default_block_size(x, x.shape[1], axis=0) or n_obs
+    bufs: list[list] = [[] for _ in row_groups]
+    for i0 in range(0, n_obs, step):
+        i1 = min(i0 + step, n_obs)
+        spans = []
+        for k, rows in enumerate(row_groups):
+            lo, hi = np.searchsorted(rows, (i0, i1))
+            if lo < hi:
+                spans.append((k, rows[lo:hi] - i0))
+        if not spans:
+            continue
+        blk = realize(x[i0:i1])
+        for k, local in spans:
+            bufs[k].append(blk if local.size == blk.shape[0] else blk[local])
+    return [_vstack_parts(b, x) for b in bufs]
 
 
 def _x_has_negative(x: np.ndarray | csr_matrix | None) -> bool:
@@ -559,7 +615,11 @@ def _pdex_ref(
     ref_mask = np.flatnonzero(unique_group_indices == ref_index)
     log.info("Reference %r: %d cells", reference, ref_mask.size)
 
-    ref_matrix = _isolate_matrix(adata, ref_mask)
+    ref_matrix = (
+        _stream_row_groups(adata.X, adata.n_obs, [ref_mask])[0]
+        if is_lazy(adata.X)
+        else _isolate_matrix(adata, ref_mask)
+    )
     ref_bulk = pseudobulk(ref_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p)
     ref_membership = ref_mask.size
 
@@ -575,16 +635,43 @@ def _pdex_ref(
 
     feature_names = adata.var_names
 
+    target_indices = [g for g in range(len(unique_groups)) if g != ref_index]
+    group_masks = {g: np.flatnonzero(unique_group_indices == g) for g in target_indices}
+
+    def _iter_group_matrices():
+        if not is_lazy(adata.X):
+            for g in target_indices:
+                yield g, _isolate_matrix(adata, group_masks[g])
+            return
+        # Lazy X: batch groups into memory-budgeted rounds — each round is one
+        # streaming pass over obs blocks instead of one amplified read per group.
+        # Group bytes are estimated from the realized reference matrix.
+        bytes_per_row = _matrix_nbytes(ref_matrix) / max(1, ref_membership)
+        rounds: list[list[int]] = [[]]
+        acc = 0.0
+        for g in target_indices:
+            est = group_masks[g].size * bytes_per_row
+            if rounds[-1] and acc + est > _STREAM_BUDGET_BYTES:
+                rounds.append([])
+                acc = 0.0
+            rounds[-1].append(g)
+            acc += est
+        for round_groups in rounds:
+            if not round_groups:
+                continue
+            mats = _stream_row_groups(
+                adata.X, adata.n_obs, [group_masks[g] for g in round_groups]
+            )
+            yield from zip(round_groups, mats)
+
     results = []
-    for group_idx in tqdm(
-        range(len(unique_groups)),
+    for group_idx, group_matrix in tqdm(
+        _iter_group_matrices(),
+        total=len(target_indices),
         desc="Running parallel differential expression (against reference)",
     ):
-        if group_idx == ref_index:
-            continue
         group_name = unique_groups[group_idx]
-        group_mask = np.flatnonzero(unique_group_indices == group_idx)
-        group_matrix = _isolate_matrix(adata, group_mask)
+        group_mask = group_masks[group_idx]
         group_bulk = pseudobulk(
             group_matrix, geometric_mean=geometric_mean, is_log1p=is_log1p
         )
@@ -659,12 +746,9 @@ def _pdex_all(
     single_block = len(blocks) == 1
     log.info("mode='all': %d var block(s) (block_size=%s)", len(blocks), block_size)
 
-    if is_lazy(adata.X):
-        # Keep the row selection in the dask graph so only (n_valid, block)
-        # is ever materialized.
-        source = adata.X[valid_mask]  # ty: ignore[not-subscriptable]
-    else:
-        source = _isolate_matrix(adata, valid_mask)
+    # Lazy X never goes through dask fancy row indexing (shuffle machinery +
+    # per-chunk re-reads); rows are selected in memory after each block realizes.
+    source = None if is_lazy(adata.X) else _isolate_matrix(adata, valid_mask)
 
     local_group_masks = [np.flatnonzero(codes_valid == g) for g in range(n_groups)]
     group_sizes = np.array([m.size for m in local_group_masks])
@@ -681,9 +765,16 @@ def _pdex_all(
         blocks,
         desc="Running parallel differential expression (1 vs Rest)",
     ):
-        block = (
-            realize(source) if single_block else realize(source[:, j0:j1])  # ty: ignore[not-subscriptable, invalid-argument-type]
-        )
+        if source is not None:
+            block = source if single_block else source[:, j0:j1]
+        elif single_block:
+            # One streaming pass over obs blocks (row-major lazy stores).
+            block = _stream_row_groups(adata.X, adata.n_obs, [valid_mask])[0]
+        else:
+            # Column-block read (cheap on var-chunked stores); row filter in memory.
+            block = realize(adata.X[:, j0:j1])  # ty: ignore[not-subscriptable]
+            if valid_mask.size < adata.n_obs:
+                block = block[valid_mask]
         n_block = j1 - j0
 
         # One-shot 1-vs-rest MWU: each gene is ranked once, not once per group.
@@ -814,6 +905,49 @@ def _pdex_on_target(
         _per_cell_library_sizes(adata, is_log1p) if cpm_filter is not None else None
     )
 
+    # Lazy X: one streaming pass collects every group's target-gene column and the
+    # reference rows over all needed genes — per-group dask slicing would re-read
+    # the row chunks once per group (~n_groups x IO amplification).
+    fetch_cols = None
+    if is_lazy(adata.X):
+        name_to_idx = {name: i for i, name in enumerate(unique_groups)}
+        target_names = [g for g in unique_groups if g in group_gene_map]
+        gene_indices = sorted({group_gene_map[n] for n in target_names})
+        gene_pos = {gi: k for k, gi in enumerate(gene_indices)}
+        rows_map = {
+            n: np.flatnonzero(unique_group_indices == name_to_idx[n])
+            for n in target_names
+        }
+        sub = adata.X[:, gene_indices]  # ty: ignore[not-subscriptable, invalid-argument-type]
+        n_obs = adata.n_obs
+        step = default_block_size(adata.X, adata.n_vars, axis=0) or n_obs
+        ref_parts: list = []
+        col_parts: dict[str, list[np.ndarray]] = {n: [] for n in target_names}
+        for i0 in range(0, n_obs, step):
+            i1 = min(i0 + step, n_obs)
+            blk = realize(sub[i0:i1])  # ty: ignore[not-subscriptable]
+            lo, hi = np.searchsorted(ref_mask, (i0, i1))
+            if lo < hi:
+                ref_parts.append(blk[ref_mask[lo:hi] - i0])
+            for name in target_names:
+                grp_rows = rows_map[name]
+                lo, hi = np.searchsorted(grp_rows, (i0, i1))
+                if lo < hi:
+                    piece = blk[grp_rows[lo:hi] - i0][
+                        :, [gene_pos[group_gene_map[name]]]
+                    ]
+                    if isinstance(piece, csr_matrix):
+                        piece = piece.toarray()
+                    col_parts[name].append(np.asarray(piece).ravel())
+        ref_sub = _vstack_parts(ref_parts, sub)
+        lazy_cols = {
+            n: np.concatenate(parts) if parts else np.empty(0)
+            for n, parts in col_parts.items()
+        }
+
+        def fetch_cols(group_name: str, gene_idx: int):
+            return lazy_cols[group_name], ref_sub[:, [gene_pos[gene_idx]]]
+
     rows = []
     for group_idx in tqdm(
         range(len(unique_groups)),
@@ -827,8 +961,11 @@ def _pdex_on_target(
         group_mask = np.flatnonzero(unique_group_indices == group_idx)
 
         # Slice single gene column — result shape (n_cells, 1)
-        group_col = _isolate_matrix(adata, mask_x=group_mask, mask_y=gene_idx)
-        ref_col = _isolate_matrix(adata, mask_x=ref_mask, mask_y=gene_idx)
+        if fetch_cols is not None:
+            group_col, ref_col = fetch_cols(group_name, gene_idx)
+        else:
+            group_col = _isolate_matrix(adata, mask_x=group_mask, mask_y=gene_idx)
+            ref_col = _isolate_matrix(adata, mask_x=ref_mask, mask_y=gene_idx)
 
         # Sparse slices come back as matrices; convert to dense
         if isinstance(group_col, csr_matrix):

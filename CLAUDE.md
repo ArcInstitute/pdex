@@ -73,13 +73,29 @@ All `X` access funnels through `src/pdex/_backend.py`:
 - `default_block_size(x, n_other, axis)` — chunk-aligned block extent along `axis`
   targeting ~256 MB dense-equivalent per block; returns `None` for in-memory `X`.
 
-Access-pattern strategy per mode: `"ref"`/`"on_target"` stream **per group** via row
-slicing (peak memory = largest group; near-optimal for row-major storage). `"all"` streams
-in **var (gene) blocks** (see Performance Design). `_per_cell_library_sizes` (on_target +
-cpm_filter) streams contiguous **row blocks**. obs columns from `Dataset2D` are normalized
-via `_obs_series()` before pandas ops. `_detect_is_log1p` and `_x_has_negative` realize
-their bounded samples. Tests: `tests/test_lazy.py` asserts lazy/backed == in-memory across
-all modes, block-size invariance, and an fsspec `memory://` store (same code path as s3).
+**Never fancy-row-index a lazy (dask) X per group** — scattered groups touch nearly every
+storage chunk, so dask re-reads the dataset ~once *per group* (measured 10x slowdown at
+100k cells x 100 groups; scales with group count). All lazy row access instead goes through
+`_stream_row_groups(x, n_obs, row_groups)`: one pass over chunk-aligned obs blocks, each
+block realized exactly once, rows scattered to the requesting groups (blocks no group
+needs are never computed). Per-mode strategy on lazy X:
+
+- `"ref"` — reference realized via one streaming pass; target groups batched into
+  memory-budgeted **rounds** (`_STREAM_BUDGET_BYTES`, 4 GiB of buffered group matrices,
+  estimated from the realized reference's bytes/row), one streaming pass per round. Total
+  passes ≈ `total_group_bytes / budget` instead of one per group; peak memory ≈ budget.
+- `"all"` — single-block: one `_stream_row_groups` pass; var-blocked: `realize(X[:, j0:j1])`
+  per block (cheap on var-chunked stores) with the valid-row filter applied in memory.
+- `"on_target"` — one streaming pass over `X[:, needed_genes]` collects every group's
+  target-gene column and the reference rows at all needed genes (`fetch_cols` closure).
+
+Backed h5ad (h5py/`_CSRDataset`) keeps the original per-group row slicing — direct reads,
+no dask amplification. `_per_cell_library_sizes` (on_target + cpm_filter) streams
+contiguous **row blocks**. obs columns from `Dataset2D` are normalized via `_obs_series()`
+before pandas ops. `_detect_is_log1p` and `_x_has_negative` realize their bounded samples.
+Tests: `tests/test_lazy.py` asserts lazy/backed == in-memory across all modes, block-size
+invariance, forced multi-block/multi-round streaming (monkeypatched `default_block_size` /
+`_STREAM_BUDGET_BYTES`), and an fsspec `memory://` store (same code path as s3).
 
 ### CPM floor filter (`cpm_filter`)
 

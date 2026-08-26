@@ -115,6 +115,41 @@ class TestGeneBlockStreaming:
         assert_frame_equal(_run(lazy, "all", block_size=3), expected)
 
 
+class TestObsBlockStreaming:
+    """Lazy X is read via chunk-aligned obs-block streaming (one realize per
+    block, rows scattered to groups) rather than per-group dask fancy indexing.
+    Force tiny blocks/rounds so the multi-block and multi-round paths run."""
+
+    @pytest.mark.parametrize("fmt", FORMATS)
+    @pytest.mark.parametrize(
+        "mode,kwargs",
+        [
+            ("ref", {}),
+            ("all", {}),
+            ("on_target", {"gene_col": "target_gene", "cpm_filter": 1.0}),
+        ],
+    )
+    def test_tiny_obs_blocks(
+        self, on_target_adata, tmp_path, monkeypatch, fmt, mode, kwargs
+    ):
+        import pdex as pdex_mod
+
+        monkeypatch.setattr(pdex_mod, "default_block_size", lambda *a, **k: 7)
+        expected = _run(on_target_adata, mode, **kwargs)
+        lazy = _read_lazy(on_target_adata, tmp_path, fmt)
+        assert_frame_equal(_run(lazy, mode, **kwargs), expected)
+
+    @pytest.mark.parametrize("fmt", FORMATS)
+    def test_ref_multi_round(self, small_adata, tmp_path, monkeypatch, fmt):
+        """A 1-byte budget forces one streaming round per group."""
+        import pdex as pdex_mod
+
+        monkeypatch.setattr(pdex_mod, "_STREAM_BUDGET_BYTES", 1)
+        expected = _run(small_adata, "ref")
+        lazy = _read_lazy(small_adata, tmp_path, fmt)
+        assert_frame_equal(_run(lazy, "ref"), expected)
+
+
 class TestBackedH5ad:
     """Classic ad.read_h5ad(backed='r') keeps working across all modes."""
 
