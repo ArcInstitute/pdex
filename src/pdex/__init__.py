@@ -12,12 +12,7 @@ from scipy.sparse import csr_matrix, issparse
 from scipy.stats import false_discovery_control
 from tqdm import tqdm
 
-from pdex._backend import (
-    default_obs_block_size,
-    default_var_block_size,
-    is_lazy,
-    realize,
-)
+from pdex._backend import default_block_size, is_lazy, realize
 from pdex._math import (
     bulk_matrix_arithmetic,
     bulk_matrix_pre_transform_mean,
@@ -103,13 +98,13 @@ def _build_group_gene_map(
         )
 
     # Unique (group, gene) pairs, dropping NaN gene entries
-    if isinstance(obs, pd.DataFrame):
-        mapping = pd.DataFrame(obs[[groupby, gene_col]])
-    else:
-        mapping = pd.DataFrame(
+    mapping = (
+        pd.DataFrame(
             {groupby: _obs_series(obs, groupby), gene_col: _obs_series(obs, gene_col)}
         )
-    mapping = mapping.drop_duplicates().dropna()
+        .drop_duplicates()
+        .dropna()
+    )
 
     # Check for non-control groups mapped to more than one gene, then drop control
     mapping = mapping[mapping[groupby] != control]
@@ -169,12 +164,8 @@ def _isolate_matrix(
     elif is_lazy(adata.X):
         # Dask disallows mixing fancy row indices with a scalar column index,
         # and dropping a dimension breaks its sparse-chunked arrays — index in
-        # two steps and keep the column axis.
-        cols = (
-            slice(mask_y, mask_y + 1)
-            if isinstance(mask_y, (int, np.integer))
-            else mask_y
-        )
+        # two steps and keep the column axis (mask_y is always a scalar here).
+        cols = slice(mask_y, mask_y + 1)
         result = adata.X[mask_x][:, cols]  # ty: ignore[not-subscriptable, invalid-argument-type]
     else:
         result = adata.X[mask_x, mask_y]  # ty: ignore[not-subscriptable]
@@ -216,7 +207,7 @@ def _per_cell_library_sizes(adata: ad.AnnData, is_log1p: bool) -> np.ndarray:
     if adata.X is None:
         raise ValueError("AnnData object does not have a matrix.")
     n_obs = adata.n_obs
-    step = default_obs_block_size(adata.X, adata.n_vars) or n_obs
+    step = default_block_size(adata.X, adata.n_vars, axis=0) or n_obs
     out = np.empty(n_obs, dtype=np.float64)
     for i0 in range(0, n_obs, step):
         i1 = min(i0 + step, n_obs)
@@ -660,13 +651,11 @@ def _pdex_all(
     # block (previous behaviour); lazy inputs stream chunk-aligned blocks so the
     # full matrix is never resident at once.
     if block_size is None:
-        block_size = default_var_block_size(adata.X, n_valid)
-    if block_size is None or block_size >= n_vars:
-        blocks = [(0, n_vars)]
-    else:
-        blocks = [
-            (j0, min(j0 + block_size, n_vars)) for j0 in range(0, n_vars, block_size)
-        ]
+        block_size = default_block_size(adata.X, n_valid, axis=1)
+    block_size = max(1, min(block_size or n_vars, n_vars))
+    blocks = [
+        (j0, min(j0 + block_size, n_vars)) for j0 in range(0, n_vars, block_size)
+    ] or [(0, n_vars)]
     single_block = len(blocks) == 1
     log.info("mode='all': %d var block(s) (block_size=%s)", len(blocks), block_size)
 
@@ -711,13 +700,18 @@ def _pdex_all(
             )
             * n_valid
         )
-        if cpm_filter is not None:
-            block_arith_sum = bulk_matrix_arithmetic(block, is_log1p) * n_valid
-
         group_pre = np.empty((n_groups, n_block))
         rest_pre = np.empty((n_groups, n_block))
-        group_arith = np.empty((n_groups, n_block)) if cpm_filter is not None else None
-        rest_arith = np.empty((n_groups, n_block)) if cpm_filter is not None else None
+        group_pre_parts.append(group_pre)
+        rest_pre_parts.append(rest_pre)
+
+        group_arith = rest_arith = None
+        if cpm_filter is not None:
+            block_arith_sum = bulk_matrix_arithmetic(block, is_log1p) * n_valid
+            group_arith = np.empty((n_groups, n_block))
+            rest_arith = np.empty((n_groups, n_block))
+            group_arith_parts.append(group_arith)
+            rest_arith_parts.append(rest_arith)
 
         for g in range(n_groups):
             group_matrix = block[local_group_masks[g]]
@@ -738,12 +732,6 @@ def _pdex_all(
                 rest_arith[g] = np.clip(
                     (block_arith_sum - group_arith[g] * n_group) / n_rest, 0, None
                 )
-
-        group_pre_parts.append(group_pre)
-        rest_pre_parts.append(rest_pre)
-        if group_arith is not None and rest_arith is not None:
-            group_arith_parts.append(group_arith)
-            rest_arith_parts.append(rest_arith)
 
     all_statistic = np.hstack(stat_parts)
     all_pvalue = np.hstack(pval_parts)

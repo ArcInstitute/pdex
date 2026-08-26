@@ -109,11 +109,10 @@ class TestGeneBlockStreaming:
         assert_frame_equal(blocked, expected)
 
     @pytest.mark.parametrize("fmt", FORMATS)
-    @pytest.mark.parametrize("block_size", [3])
-    def test_lazy_blocked(self, multi_group_adata, tmp_path, fmt, block_size):
+    def test_lazy_blocked(self, multi_group_adata, tmp_path, fmt):
         expected = _run(multi_group_adata, "all")
         lazy = _read_lazy(multi_group_adata, tmp_path, fmt)
-        assert_frame_equal(_run(lazy, "all", block_size=block_size), expected)
+        assert_frame_equal(_run(lazy, "all", block_size=3), expected)
 
 
 class TestBackedH5ad:

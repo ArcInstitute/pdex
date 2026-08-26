@@ -67,11 +67,11 @@ All `X` access funnels through `src/pdex/_backend.py`:
 
 - `realize(x)` — materializes any backend slice to `ndarray`/`csr_matrix` (dask
   `.compute()`, sparse → CSR, h5py/zarr → `np.asarray`). Duck-typed; dask is never
-  imported (lazy IO deps are the optional `pdex[lazy]` extra: dask, xarray, zarr, fsspec).
+  imported (lazy IO deps are the optional `pdex[lazy]` extra: `anndata[lazy]`, zarr, fsspec).
 - `is_lazy(x)` — dask detection. Dask disallows mixed fancy-row + scalar-column indexing,
   so `_isolate_matrix` indexes lazy `X` in two steps and keeps the column axis 2-D.
-- `default_var_block_size` / `default_obs_block_size` — chunk-aligned block widths
-  targeting ~256 MB dense-equivalent per block; both return `None` for in-memory `X`.
+- `default_block_size(x, n_other, axis)` — chunk-aligned block extent along `axis`
+  targeting ~256 MB dense-equivalent per block; returns `None` for in-memory `X`.
 
 Access-pattern strategy per mode: `"ref"`/`"on_target"` stream **per group** via row
 slicing (peak memory = largest group; near-optimal for row-major storage). `"all"` streams
@@ -104,7 +104,7 @@ checked empirically (inspect the per-gene CPM distribution).
 | `src/pdex/__init__.py` | `pdex()` entry point and full pipeline logic                                                            |
 | `src/pdex/_math.py`    | Numba JIT-compiled `log2_fold_change()`, `percent_change()`, and `mwu()`/`mwu_one_vs_rest()` wrappers over `numba-mwu`; `pseudobulk()` dispatcher; `cpm_bulk()` pooled-CPM view for the filter; the `bulk_matrix_pre_transform_mean()`/`pseudobulk_from_pre_mean()`/`cpm_from_gene_means()` trio powering `"all"` mode's global-sum optimization |
 | `src/pdex/_utils.py`   | `set_numba_threadpool()` — sets Numba thread count before JIT warmup; `_available_cpus()` — affinity-aware CPU count (respects cgroup/SLURM limits); `_detect_is_log1p()` heuristic |
-| `src/pdex/_backend.py` | Storage-backend normalization: `realize()` (any slice → ndarray/csr), `is_lazy()` (dask detection), `default_var_block_size()`/`default_obs_block_size()` (chunk-aligned streaming block widths) |
+| `src/pdex/_backend.py` | Storage-backend normalization: `realize()` (any slice → ndarray/csr), `is_lazy()` (dask detection), `default_block_size()` (chunk-aligned streaming block extents) |
 
 ### Performance Design
 
@@ -149,4 +149,4 @@ from pdex import pdex, DEFAULT_REFERENCE
 
 ## Dependencies
 
-Managed with `uv`. Build backend: `hatchling`. Key packages: `anndata`, `numba`, `numba-mwu`, `polars`, `pyarrow`, `scipy`, `tqdm`. Optional extra `pdex[lazy]` (lazy/remote IO, never imported at module scope): `dask`, `xarray`, `zarr`, `fsspec`. Dev tools: `pytest`, `ruff`, `ty` (dev group includes `pdex[lazy]` so the lazy tests run).
+Managed with `uv`. Build backend: `hatchling`. Key packages: `anndata`, `numba`, `numba-mwu`, `polars`, `pyarrow`, `scipy`, `tqdm`. Optional extra `pdex[lazy]` (lazy/remote IO, never imported at module scope): `anndata[lazy]` (dask, xarray), `zarr`, `fsspec`. Dev tools: `pytest`, `ruff`, `ty` (dev group includes `pdex[lazy]` so the lazy tests run).

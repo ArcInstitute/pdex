@@ -20,9 +20,9 @@ dependencies = [
 [project.optional-dependencies]
 # Lazy/backed IO: read_lazy (dask X, xarray obs/var) over local or remote
 # zarr/h5ad stores. Core pdex never imports these at module scope.
+# anndata[lazy] carries dask/xarray with anndata's own version constraints.
 lazy = [
-    "dask>=2024.8.0",
-    "xarray>=2024.6.0",
+    "anndata[lazy]",
     "zarr>=3.0.0",
     "fsspec>=2024.6.0",
 ]

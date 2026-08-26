@@ -31,12 +31,10 @@ def realize(x) -> np.ndarray | csr_matrix:
     sparse result is normalized to ``csr_matrix``; everything else (h5py/zarr
     dense slices) goes through ``np.asarray``.
     """
-    if isinstance(x, (np.ndarray, csr_matrix)):
-        return x
     if hasattr(x, "compute"):  # dask
         x = x.compute()
-        if isinstance(x, (np.ndarray, csr_matrix)):
-            return x
+    if isinstance(x, (np.ndarray, csr_matrix)):
+        return x
     if issparse(x):
         return csr_matrix(x)
     return np.asarray(x)
@@ -57,29 +55,19 @@ def _chunk_size(x, axis: int) -> int | None:
     return int(extent) if extent else None
 
 
-def default_var_block_size(
-    x, n_rows: int, target_bytes: int = 256 * 1024**2
+def default_block_size(
+    x, n_other: int, axis: int, target_bytes: int = 256 * 1024**2
 ) -> int | None:
-    """Var-block width for gene-block streaming, aligned to storage chunks.
+    """Block extent along ``axis`` for streaming reductions, aligned to storage chunks.
 
-    Targets ``target_bytes`` of dense-equivalent float64 per block (conservative
-    for sparse inputs) and rounds to a multiple of the storage chunk width so a
-    block never reads a partial chunk. Returns ``None`` for in-memory ``x``
-    (no benefit to blocking — process everything in one shot).
+    ``n_other`` is the matrix extent along the other axis. Targets ``target_bytes``
+    of dense-equivalent float64 per block (conservative for sparse inputs) and
+    rounds to a multiple of the storage chunk extent so a block never reads a
+    partial chunk. Returns ``None`` for in-memory ``x`` (no benefit to blocking —
+    process everything in one shot).
     """
     if isinstance(x, (np.ndarray, csr_matrix)) or issparse(x):
         return None
-    width = max(1, target_bytes // max(1, n_rows * 8))
-    chunk = _chunk_size(x, axis=1) or 1
-    return int(max(chunk, (width // chunk) * chunk))
-
-
-def default_obs_block_size(
-    x, n_cols: int, target_bytes: int = 256 * 1024**2
-) -> int | None:
-    """Row-block height for streaming row reductions; ``None`` for in-memory ``x``."""
-    if isinstance(x, (np.ndarray, csr_matrix)) or issparse(x):
-        return None
-    height = max(1, target_bytes // max(1, n_cols * 8))
-    chunk = _chunk_size(x, axis=0) or 1
-    return int(max(chunk, (height // chunk) * chunk))
+    extent = max(1, target_bytes // max(1, n_other * 8))
+    chunk = _chunk_size(x, axis=axis) or 1
+    return int(max(chunk, (extent // chunk) * chunk))
